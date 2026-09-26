@@ -3,16 +3,19 @@ package main
 // Moving bodies on the plan: a particle filter over positions and
 // velocities, driven by what every anchor link measures.
 //
-// Every link is router -> reflection off a person -> anchor. Its Doppler
-// spectrum says how fast that path's length changes; for a person at x
-// moving with velocity v the rate is v . (u_router + u_anchor), where u_*
-// are unit vectors from the router and from the anchor to x (the model of
-// Widar, MobiHoc'17, and WiSLAT). Four links in different directions pin
-// the velocity down; integrated over time and checked against the walls
-// (nobody walks through a drawn wall) that becomes a track. How strong each
-// link's moving part is adds where the person can be at all: a link only
-// feels movement close to its router-anchor line (sensitivity falls with
-// the extra path length), and movement next to the router moves every link.
+// Every link is router -> reflection off a person -> anchor, and a link
+// only feels movement near its router-anchor line (sensitivity falls with
+// the extra path length the reflection takes). Each link's moving power,
+// divided by that link's own typical strong response, says which links the
+// person is close to; particles move with a random-walk velocity and never
+// cross a drawn wall. (A Doppler velocity term - Widar's path-rate model -
+// was tried and removed: on a recorded walk along a known route it made
+// no difference, with these anchors and without known antenna geometry.)
+//
+// Measured honestly on that walk: 2.6 m median error in a 9.4 x 4.5 m flat,
+// no better than always pointing at its middle (2.2 m). Four anchors, three
+// of them on one side of the router, don't pin a person down; more anchors
+// spread around the rooms are what would.
 //
 // Several bodies: some particles are re-seeded everywhere on each step, so
 // a second person elsewhere gets its own cluster; the cloud's clusters are
@@ -32,10 +35,11 @@ const (
 	reseedShare   = 0.08
 	maxSpeed      = 2.0  // m/s, walking
 	accelNoise    = 2.0  // m/s^2, how freely direction/speed change
-	sensScale     = 0.9  // m of extra path length at which a link's sensitivity falls to 1/e
+	sensScale     = 2.5  // m of extra path length at which a link's sensitivity falls to 1/e
 	powerSigma    = 0.12 // spread of the observed vs predicted share of moving power
-	bodyMinShare  = 0.12 // a cluster needs this share of the weight to count as a body
-	bodyCell      = 0.4  // m, clustering grid
+	bodyMinShare  = 0.25 // a cluster needs this share of the weight to count as a body
+	showAfter     = 1500 * time.Millisecond
+	bodyCell      = 0.4 // m, clustering grid
 	idleFadeAfter = 2 * time.Second
 	forgetAfter   = 20 * time.Second
 )
@@ -62,10 +66,9 @@ type TrackState struct {
 }
 
 type linkObs struct {
+	mac    string
 	a      [2]float64 // anchor position
 	moving float64    // linear moving power above normal (0 = normal)
-	dop    []float64  // excess Doppler power per dopplerV bin, max-normalised
-	rmax   float64    // highest path rate this link can see without aliasing
 	active bool
 }
 
@@ -74,10 +77,39 @@ type tracker struct {
 	ps       []particle
 	lastT    time.Time
 	lastMove time.Time
+	moveFrom time.Time // start of the current stretch of movement
 	nextID   int
 	bodies   []Body
 	sig      string // plan signature: reset when the plan changes
 	inside   *insideMask
+	resp     map[string][]float64 // per link: its moving power at moments with movement
+}
+
+// Links differ a lot in how strongly they respond at all (the vacuum's
+// 2.4 GHz link in the router's room reacts to everything, the lamp's
+// through-wall link hardly): each link's moving power is divided by its
+// own typical strong response (90th percentile of the last ~hour of
+// moments with movement), so "every link rose by its usual amount" reads
+// as near the router, not as "the loudest link wins".
+const respKeep = 15000
+
+func (t *tracker) learnResponse(mac string, v float64) {
+	if t.resp == nil {
+		t.resp = map[string][]float64{}
+	}
+	h := append(t.resp[mac], v)
+	if len(h) > respKeep {
+		h = h[len(h)-respKeep:]
+	}
+	t.resp[mac] = h
+}
+
+func (t *tracker) gain(mac string) float64 {
+	h := t.resp[mac]
+	if len(h) < 40 {
+		return 1
+	}
+	return math.Max(1, percentile(h, 0.9))
 }
 
 // insideMask: which parts of the plan are indoors - everything that can't
@@ -232,33 +264,10 @@ func (t *tracker) step(now time.Time, pl Plan, links []LinkState) TrackState {
 			continue
 		}
 		pts = append(pts, p)
-		o := linkObs{a: p, rmax: 2.5}
-		lambda := 299792458 / 5.2e9
-		if l.Chains <= 2 {
-			lambda = 299792458 / 2.44e9
-		}
-		if l.Rate > 0 {
-			o.rmax = math.Min(2.5, l.Rate*lambda/2)
-		}
+		o := linkObs{a: p, mac: l.MAC}
 		o.moving = math.Max(0, math.Pow(10, l.Score/10)-1)
 		total += o.moving
 		o.active = l.Score > l.Threshold*0.5
-		if len(l.Doppler) == len(dopplerV) {
-			o.dop = make([]float64, len(dopplerV))
-			var mx float64
-			for i, d := range l.Doppler {
-				e := math.Max(0, math.Pow(10, d/10)-2) // above ~3 dB: this speed is present
-				o.dop[i] = e
-				mx = math.Max(mx, e)
-			}
-			if mx > 0 {
-				for i := range o.dop {
-					o.dop[i] /= mx
-				}
-			} else {
-				o.dop = nil
-			}
-		}
 		obs = append(obs, o)
 	}
 	if len(obs) < 2 {
@@ -291,8 +300,21 @@ func (t *tracker) step(now time.Time, pl Plan, links []LinkState) TrackState {
 			moving = true
 		}
 	}
+	if !moving {
+		t.moveFrom = time.Time{}
+	} else if t.moveFrom.IsZero() {
+		t.moveFrom = now
+	}
 	if moving {
 		t.lastMove = now
+		for _, o := range obs {
+			t.learnResponse(o.mac, o.moving)
+		}
+	}
+	total = 0
+	for k := range obs {
+		obs[k].moving /= t.gain(obs[k].mac)
+		total += obs[k].moving
 	}
 	st.Moving = math.Min(1, total/10)
 	if !moving {
@@ -352,31 +374,9 @@ func (t *tracker) step(now time.Time, pl Plan, links []LinkState) TrackState {
 			dR := math.Hypot(p.x-R[0], p.y-R[1])
 			dA := math.Hypot(p.x-o.a[0], p.y-o.a[1])
 			direct := math.Hypot(o.a[0]-R[0], o.a[1]-R[1])
-			f[k] = math.Exp(-(dR + dA - direct) / sensScale)
+			f[k] = sensitivity(dR, dA, direct)
 			fs += f[k]
 			ms += o.moving
-			// Doppler: this particle's path-length rate on link k
-			if o.dop != nil && o.active {
-				ux, uy := 0.0, 0.0
-				if dR > 0.05 {
-					ux, uy = (p.x-R[0])/dR, (p.y-R[1])/dR
-				}
-				if dA > 0.05 {
-					ux += (p.x - o.a[0]) / dA
-					uy += (p.y - o.a[1]) / dA
-				}
-				r := p.vx*ux + p.vy*uy
-				// aliasing: rates beyond what this link can sample fold back
-				if o.rmax > 0 && math.Abs(r) > o.rmax {
-					r = math.Mod(r+o.rmax, 2*o.rmax)
-					if r < 0 {
-						r += 2 * o.rmax
-					}
-					r -= o.rmax
-				}
-				// the sign convention isn't verified yet: use both signs
-				lw += math.Log(0.15 + dopAt(o.dop, r) + dopAt(o.dop, -r))
-			}
 		}
 		if ms > 0 && fs > 0 {
 			// which links feel it, relative to each other...
@@ -404,16 +404,11 @@ func (t *tracker) step(now time.Time, pl Plan, links []LinkState) TrackState {
 		t.ps[i].w /= wsum
 	}
 	st.Bodies = t.cluster(b)
+	if t.moveFrom.IsZero() || now.Sub(t.moveFrom) < showAfter {
+		st.Bodies = []Body{} // a twitch of one tick is not somebody walking
+	}
 	t.resample()
 	return st
-}
-
-func dopAt(d []float64, r float64) float64 {
-	i := int(math.Round((r - dopplerV[0]) / 0.1))
-	if i < 0 || i >= len(d) {
-		return 0
-	}
-	return d[i]
 }
 
 func planSig(pl Plan) string {
@@ -569,3 +564,11 @@ func (t *tracker) cluster(b [4]float64) []Body {
 }
 
 func round2(f float64) float64 { return math.Round(f*100) / 100 }
+
+// sensitivity: how strongly a person at distances dR (router) and dA
+// (anchor) moves a link of length direct, relative to its strongest case:
+// falls with the extra path length the reflection takes. 2.5 m was the
+// best of 0.6-2.5 m on a recorded walk along a known route (2026-09-26).
+func sensitivity(dR, dA, direct float64) float64 {
+	return math.Exp(-(dR + dA - direct) / sensScale)
+}
