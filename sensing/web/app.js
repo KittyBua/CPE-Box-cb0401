@@ -179,6 +179,14 @@ function draw() {
     ctx.fillText(Math.hypot(e[0] - wallStart[0], e[1] - wallStart[1]).toFixed(1) + ' m', (ax + bx) / 2 + 6, (ay + by) / 2 - 6);
   }
 
+  // ground-truth clicks of the last minute
+  for (const [x, y, t] of herePts) {
+    const age = (performance.now() - t) / 60000;
+    if (age > 1) continue;
+    const [sx, sy] = toScreen(x, y);
+    ctx.strokeStyle = `rgba(242,179,91,${1 - age})`; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(sx - 7, sy - 7); ctx.lineTo(sx + 7, sy + 7); ctx.moveTo(sx + 7, sy - 7); ctx.lineTo(sx - 7, sy + 7); ctx.stroke();
+  }
   // moving bodies: a glowing ball each, with the trail of where it went
   for (const o of Object.values(S.balls)) {
     const now = performance.now();
@@ -237,6 +245,7 @@ function hitMarker(p) {
 canvas.addEventListener('pointerdown', (ev) => {
   const p = pointerWorld(ev);
   cursor = p;
+  if (!editing && herePicking) { markHere(p); return; }
   if (!editing) { panning = { x: ev.clientX, y: ev.clientY, o: { ...origin } }; canvas.setPointerCapture(ev.pointerId); return; }
   if (placing) { S.plan.devices[placing] = snap(p); placing = null; setHint(); planChanged(); renderDevices(); return; }
   if (tool === 'wall') {
@@ -501,6 +510,22 @@ async function recCall(body) {
 }
 function recPoll() { recCall(); setTimeout(recPoll, 1000); }
 $('recToggle').onclick = () => recCall({ action: recState.recording ? 'stop' : 'start' });
+// ground truth: where the person really is, clicked on the plan
+let herePicking = false;
+const herePts = [];
+$('hereBtn').onclick = () => {
+  herePicking = !herePicking;
+  if (herePicking && editing) $('editToggle').click();
+  if (herePicking && S.view !== '2d') setView('2d');
+  canvas.classList.toggle('picking', herePicking);
+  $('hereBtn').classList.toggle('on', herePicking);
+};
+async function markHere(p) {
+  herePicking = false; canvas.classList.remove('picking'); $('hereBtn').classList.remove('on');
+  herePts.push([p[0], p[1], performance.now()]);
+  if (!recState.recording) await recCall({ action: 'start' });
+  recCall({ action: 'mark', label: `at:${p[0].toFixed(2)},${p[1].toFixed(2)}` });
+}
 document.querySelectorAll('.rec-labels button').forEach((b) => b.onclick = () => recCall({ action: 'mark', label: b.dataset.label }));
 
 let userMovedView = false; // after the user pans or zooms, stop auto-fitting

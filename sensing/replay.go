@@ -10,6 +10,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -79,6 +80,7 @@ func replay(dir, planPath string, threshold float64, rotation time.Duration) err
 		}
 		fmt.Fprintf(os.Stderr, "%s: %d frames, %d transmit states, %d glitches dropped\n", mac, len(l.frames), len(l.dsp.states), l.dsp.dropped)
 	}
+	var seen []bodiesAt
 	fmt.Println("time\tmac\tlabel\tmetric_dB\tscore\tthr\tmotion\tspeed\ttoward\tsig\tsig_q")
 	for T := first.Add(time.Second); !T.After(last); T = T.Add(tickEvery) {
 		for mac, fr := range all {
@@ -92,6 +94,7 @@ func replay(dir, planPath string, threshold float64, rotation time.Duration) err
 		}
 		states := a.tick(T)
 		if tr := trk.step(T, pl, states); tr.Ready {
+			seen = append(seen, bodiesAt{T, tr.Bodies})
 			for _, b := range tr.Bodies {
 				fmt.Printf("%s\tbody%d\t%s\t%.2f,%.2f\tshare %.2f\tspread %.2f\tspeed %.2f\n", T.Format("15:04:05.00"), b.ID, labelAt(T), b.X, b.Y, b.Share, b.Spread, b.Speed)
 			}
@@ -108,5 +111,39 @@ func replay(dir, planPath string, threshold float64, rotation time.Duration) err
 			fmt.Printf("%s\t%s\t%s\t%.1f\t%.1f\t%.1f\t%v\t%.2f\t%.2f\t%s\t%.2f\n", T.Format("15:04:05.00"), s.MAC, labelAt(T), md, s.Score, s.Threshold, s.Motion, s.Speed, s.Toward, strings.Join(sig, ","), s.SigQ)
 		}
 	}
+	evaluate(marks, seen)
 	return nil
+}
+
+type bodiesAt struct {
+	t      time.Time
+	bodies []Body
+}
+
+// evaluate: for every "at:x,y" mark (where the person really was, clicked
+// on the plan), the distance to the nearest body shown within 1.5 s of it.
+func evaluate(marks []mark, seen []bodiesAt) {
+	var errs []float64
+	for _, m := range marks {
+		var x, y float64
+		if _, err := fmt.Sscanf(m.Label, "at:%f,%f", &x, &y); err != nil {
+			continue
+		}
+		t := time.Unix(0, int64(m.T*1e9))
+		best := math.Inf(1)
+		for _, s := range seen {
+			if d := s.t.Sub(t); d < -1500*time.Millisecond || d > 1500*time.Millisecond {
+				continue
+			}
+			for _, b := range s.bodies {
+				best = math.Min(best, math.Hypot(b.X-x, b.Y-y))
+			}
+		}
+		errs = append(errs, best)
+		fmt.Fprintf(os.Stderr, "truth %s at %.2f,%.2f: nearest body %.2f m\n", t.Format("15:04:05"), x, y, best)
+	}
+	if len(errs) > 0 {
+		sort.Float64s(errs)
+		fmt.Fprintf(os.Stderr, "%d truth marks: median error %.2f m, worst %.2f m (Inf = no body shown)\n", len(errs), errs[len(errs)/2], errs[len(errs)-1])
+	}
 }
