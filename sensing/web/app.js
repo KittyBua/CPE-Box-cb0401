@@ -18,7 +18,6 @@ let scale = 50;           // px per metre
 let origin = { x: 0, y: 0 }; // screen px of world (0,0)
 let editing = false;
 let tool = 'wall';
-let wallStart = null;     // [x,y] while drawing a chain of walls
 let cursor = null;        // world position under the pointer
 let placing = null;       // MAC waiting for a click to be placed
 let dragging = null;      // {kind:'router'|'device', mac}
@@ -113,12 +112,14 @@ function distToSeg(p, a, b) {
 }
 
 // snap: 10 cm grid, existing wall ends within 25 cm, near-horizontal/vertical from the start point
-function snap(p, from) {
+function snap(p, from, skip) {
   let [x, y] = p;
   let best = null;
-  for (const w of S.plan.walls) for (const e of [[w[0], w[1]], [w[2], w[3]]]) {
+  const r = Math.max(0.15, 12 / scale);
+  for (const [i, w] of S.plan.walls.entries()) for (const [k, e] of [[0, [w[0], w[1]]], [1, [w[2], w[3]]]]) {
+    if (skip && skip.some(([si, sk]) => si === i && sk === k)) continue;
     const d = Math.hypot(e[0] - x, e[1] - y);
-    if (d < 0.25 && (!best || d < best.d)) best = { d, e };
+    if (d < r && (!best || d < best.d)) best = { d, e };
   }
   if (best) return best.e.slice();
   x = Math.round(x * 10) / 10; y = Math.round(y * 10) / 10;
@@ -132,8 +133,14 @@ function snap(p, from) {
 
 // --------------------------------------------------------------- saving ---
 let saveTimer = null;
-function planChanged(auto) {
+// undo: every change keeps the plan as it was before it
+const undoStack = [];
+let lastPlan = null;
+function planChanged(auto, fromUndo) {
   if (!auto) S.plan.auto = false;
+  const now = JSON.stringify(S.plan);
+  if (!fromUndo && lastPlan && lastPlan !== now) { undoStack.push(lastPlan); if (undoStack.length > 100) undoStack.shift(); }
+  lastPlan = now;
   S.planListeners.forEach((f) => f());
   clearTimeout(saveTimer);
   $('saved').textContent = 'saving…';
@@ -170,13 +177,20 @@ function draw() {
     const [ax, ay] = toScreen(w[0], w[1]), [bx, by] = toScreen(w[2], w[3]);
     ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
   }
-  if (editing && tool === 'wall' && wallStart && cursor) {
-    const e = snap(cursor, wallStart);
-    const [ax, ay] = toScreen(wallStart[0], wallStart[1]), [bx, by] = toScreen(e[0], e[1]);
-    ctx.strokeStyle = 'rgba(201,211,222,0.5)';
+  if (editing && dragging && dragging.kind === 'new' && cursor) {
+    const a = dragging.a, e = snap(cursor, a);
+    const [ax, ay] = toScreen(a[0], a[1]), [bx, by] = toScreen(e[0], e[1]);
+    ctx.strokeStyle = 'rgba(201,211,222,0.6)';
     ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
     ctx.fillStyle = '#8494a6'; ctx.font = '12px sans-serif';
-    ctx.fillText(Math.hypot(e[0] - wallStart[0], e[1] - wallStart[1]).toFixed(1) + ' m', (ax + bx) / 2 + 6, (ay + by) / 2 - 6);
+    ctx.fillText(Math.hypot(e[0] - a[0], e[1] - a[1]).toFixed(1) + ' m', (ax + bx) / 2 + 6, (ay + by) / 2 - 6);
+  }
+  // corner handles while editing walls
+  if (editing && (tool === 'wall' || tool === 'move')) {
+    ctx.fillStyle = '#f2b35b';
+    for (const w of S.plan.walls) for (const [x, y] of [[w[0], w[1]], [w[2], w[3]]]) {
+      const [sx, sy] = toScreen(x, y); ctx.beginPath(); ctx.arc(sx, sy, 4, 0, Math.PI * 2); ctx.fill();
+    }
   }
 
   // ground-truth clicks of the last minute
@@ -241,25 +255,56 @@ function hitMarker(p) {
   for (const [mac, q] of Object.entries(S.plan.devices)) if (Math.hypot(q[0] - p[0], q[1] - p[1]) < 12 / scale) return { kind: 'device', mac };
   return null;
 }
+// wall ends at a point: [[wall index, 0|1], ...] (joined walls share ends)
+function endsAt(pt, tol) {
+  const out = [];
+  S.plan.walls.forEach((w, i) => {
+    if (Math.hypot(w[0] - pt[0], w[1] - pt[1]) < tol) out.push([i, 0]);
+    if (Math.hypot(w[2] - pt[0], w[3] - pt[1]) < tol) out.push([i, 1]);
+  });
+  return out;
+}
+function hitWallEnd(p) {
+  let best = null;
+  for (const w of S.plan.walls) for (const e of [[w[0], w[1]], [w[2], w[3]]]) {
+    const d = Math.hypot(e[0] - p[0], e[1] - p[1]);
+    if (d < 14 / scale && (!best || d < best.d)) best = { d, e };
+  }
+  return best && best.e;
+}
+function hitWall(p) {
+  let best = -1, bd = 10 / scale;
+  S.plan.walls.forEach((w, i) => { const d = distToSeg(p, [w[0], w[1]], [w[2], w[3]]); if (d < bd) { bd = d; best = i; } });
+  return best;
+}
+const setEnd = (i, k, q) => { const w = S.plan.walls[i]; if (k === 0) { w[0] = q[0]; w[1] = q[1]; } else { w[2] = q[0]; w[3] = q[1]; } };
 
+// Editing is all dragging: drag on empty space draws a wall (Wall tool),
+// drag a wall's end to move that corner (joined walls follow), drag a wall's
+// middle to move the whole wall, drag the router or a device to move it.
 canvas.addEventListener('pointerdown', (ev) => {
   const p = pointerWorld(ev);
   cursor = p;
   if (!editing && herePicking) { markHere(p); return; }
   if (!editing) { panning = { x: ev.clientX, y: ev.clientY, o: { ...origin } }; canvas.setPointerCapture(ev.pointerId); return; }
   if (placing) { S.plan.devices[placing] = snap(p); placing = null; setHint(); planChanged(); renderDevices(); return; }
-  if (tool === 'wall') {
-    const q = snap(p, wallStart);
-    if (!wallStart) { wallStart = q; setHint(); return; }
-    if (Math.hypot(q[0] - wallStart[0], q[1] - wallStart[1]) > 0.05) { S.plan.walls.push([wallStart[0], wallStart[1], q[0], q[1]]); planChanged(); }
-    wallStart = q; return;
+  if (tool === 'wall' || tool === 'move') {
+    canvas.setPointerCapture(ev.pointerId);
+    const m = hitMarker(p);
+    if (m) { dragging = m; return; }
+    const e = hitWallEnd(p);
+    if (e) { dragging = { kind: 'end', refs: endsAt(e, 0.01) }; return; }
+    const wi = hitWall(p);
+    if (wi >= 0) {
+      const w = S.plan.walls[wi];
+      dragging = { kind: 'wall', i: wi, from: p, orig: w.slice(), a: endsAt([w[0], w[1]], 0.01).filter(([i]) => i !== wi), b: endsAt([w[2], w[3]], 0.01).filter(([i]) => i !== wi) };
+      return;
+    }
+    if (tool === 'wall') { dragging = { kind: 'new', a: snap(p) }; return; }
+    panning = { x: ev.clientX, y: ev.clientY, o: { ...origin } };
+    return;
   }
   if (tool === 'router') { S.plan.router = snap(p); planChanged(); return; }
-  if (tool === 'move') {
-    dragging = hitMarker(p);
-    if (!dragging) panning = { x: ev.clientX, y: ev.clientY, o: { ...origin } };
-    canvas.setPointerCapture(ev.pointerId); return;
-  }
   if (tool === 'scale') {
     let best = -1, bd = 14 / scale;
     S.plan.walls.forEach((w, i) => { const d = distToSeg(p, [w[0], w[1]], [w[2], w[3]]); if (d < bd) { bd = d; best = i; } });
@@ -280,26 +325,35 @@ canvas.addEventListener('pointerdown', (ev) => {
     const m = hitMarker(p);
     if (m && m.kind === 'router') { S.plan.router = null; planChanged(); return; }
     if (m && m.kind === 'device') { delete S.plan.devices[m.mac]; planChanged(); renderDevices(); return; }
-    let best = -1, bd = 0.3;
-    S.plan.walls.forEach((w, i) => { const d = distToSeg(p, [w[0], w[1]], [w[2], w[3]]); if (d < bd) { bd = d; best = i; } });
-    if (best >= 0) { S.plan.walls.splice(best, 1); planChanged(); }
+    const wi = hitWall(p);
+    if (wi >= 0) { S.plan.walls.splice(wi, 1); planChanged(); }
   }
 });
 canvas.addEventListener('pointermove', (ev) => {
   cursor = pointerWorld(ev);
   if (panning) { userMovedView = true; origin = { x: panning.o.x + ev.clientX - panning.x, y: panning.o.y + ev.clientY - panning.y }; return; }
-  if (dragging) {
-    const q = snap(cursor);
-    if (dragging.kind === 'router') S.plan.router = q; else S.plan.devices[dragging.mac] = q;
+  if (!dragging) return;
+  if (dragging.kind === 'router') S.plan.router = snap(cursor);
+  else if (dragging.kind === 'device') S.plan.devices[dragging.mac] = snap(cursor);
+  else if (dragging.kind === 'end') { const q = snap(cursor, null, dragging.refs); for (const [i, k] of dragging.refs) setEnd(i, k, q); }
+  else if (dragging.kind === 'wall') {
+    const dx = Math.round((cursor[0] - dragging.from[0]) * 10) / 10, dy = Math.round((cursor[1] - dragging.from[1]) * 10) / 10;
+    const o = dragging.orig, a = [o[0] + dx, o[1] + dy], b = [o[2] + dx, o[3] + dy];
+    S.plan.walls[dragging.i] = [...a, ...b];
+    for (const [i, k] of dragging.a) setEnd(i, k, a);
+    for (const [i, k] of dragging.b) setEnd(i, k, b);
   }
 });
 canvas.addEventListener('pointerup', () => {
-  if (dragging) { dragging = null; planChanged(); }
+  if (dragging && dragging.kind === 'new' && cursor) {
+    const b = snap(cursor, dragging.a);
+    if (Math.hypot(b[0] - dragging.a[0], b[1] - dragging.a[1]) > 0.1) S.plan.walls.push([...dragging.a, ...b]);
+  }
+  if (dragging) { dragging = null; planChanged(); renderDevices(); }
   panning = null;
 });
-canvas.addEventListener('dblclick', () => { wallStart = null; setHint(); });
-canvas.addEventListener('contextmenu', (ev) => { ev.preventDefault(); wallStart = null; setHint(); });
-window.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') { wallStart = null; placing = null; setHint(); } });
+canvas.addEventListener('contextmenu', (ev) => ev.preventDefault());
+window.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') { if (dragging && dragging.kind === 'new') dragging = null; placing = null; setHint(); } });
 canvas.addEventListener('wheel', (ev) => {
   ev.preventDefault();
   zoomAt(ev.offsetX, ev.offsetY, ev.deltaY < 0 ? 1.15 : 1 / 1.15);
@@ -325,7 +379,7 @@ canvas.addEventListener('pointerdown', (ev) => {
   if (touches.size === 2) {
     const [p1, p2] = [...touches.values()];
     pinch = { d: Math.hypot(p1[0] - p2[0], p1[1] - p2[1]) };
-    panning = null; dragging = null; wallStart = null;
+    panning = null; dragging = null;
   }
 }, true);
 canvas.addEventListener('pointermove', (ev) => {
@@ -348,22 +402,22 @@ $('zoomFit').onclick = () => { userMovedView = false; fit(); S.planListeners.for
 // --------------------------------------------------------------- toolbar ---
 function setHint() {
   const h = {
-    wall: wallStart ? 'Click each corner. Double-click, right-click or Esc to finish.' : 'Click where a wall starts. Grid squares are 1 m.',
+    wall: 'Drag to draw a wall. Drag a corner to move it (joined walls follow), drag a wall to move it. Grid squares are 1 m.',
     router: 'Click where the router stands.',
-    move: 'Drag the router or devices. Drag empty space to pan.',
+    move: 'Drag the router, devices, wall corners or walls. Drag empty space to pan.',
     erase: 'Click a wall, the router or a device to remove it.',
     scale: 'Click a wall whose real length you know: the whole plan is resized to match.',
   }[tool];
   $('hint').textContent = placing ? `Click on the plan where "${labelOf(placing)}" is.` : h;
 }
 document.querySelectorAll('#toolbar [data-tool]').forEach((b) => b.onclick = () => {
-  tool = b.dataset.tool; wallStart = null; placing = null;
+  tool = b.dataset.tool; placing = null;
   document.querySelectorAll('#toolbar [data-tool]').forEach((x) => x.classList.toggle('on', x === b));
   setHint();
 });
-$('undoWall').onclick = () => { if (S.plan.walls.length) { S.plan.walls.pop(); planChanged(); } };
+$('undoWall').onclick = () => { const prev = undoStack.pop(); if (prev) { S.plan = JSON.parse(prev); planChanged(false, true); renderDevices(); } };
 $('editToggle').onclick = () => {
-  editing = !editing; wallStart = null; placing = null;
+  editing = !editing; placing = null;
   $('toolbar').hidden = !editing;
   document.body.classList.toggle('editing', editing);
   $('editToggle').classList.toggle('on', editing);
@@ -532,6 +586,7 @@ let userMovedView = false; // after the user pans or zooms, stop auto-fitting
 async function init() {
   try { const r = await fetch('api/plan'); if (r.ok) S.plan = await r.json(); } catch (e) {}
   S.plan.walls = S.plan.walls || []; S.plan.devices = S.plan.devices || {}; S.plan.names = S.plan.names || {};
+  lastPlan = JSON.stringify(S.plan);
   // Size and fit once the stage has its real size (it can still be 0 x 0
   // at this point), and again whenever it changes until the user moves the view.
   new ResizeObserver(() => { resize(); if (!userMovedView) fit(); }).observe(document.getElementById('stage'));
