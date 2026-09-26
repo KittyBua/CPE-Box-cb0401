@@ -107,6 +107,7 @@ PERIODICITY_MS=20
 MAX_PEERS=4
 PEERS=""
 BAND=both
+BW5=2 # capture bandwidth code on 5 GHz: 0 = 20 MHz, 2 = 80 MHz
 # shellcheck disable=SC1090
 [ -f "$CONF" ] && . "$CONF"
 
@@ -196,10 +197,16 @@ reconcile() {
     printf '%s\n' "$want" | while read -r vap mac; do
         [ -n "$mac" ] || continue
         grep -q " $mac\$" "$STATE" && continue
-        # <bw>=0, <type>=0: the values verified live; bw did not change
-        # the record size, type 0 is the QoS-null based method that works.
-        if wlanconfig "$vap" cfr start "$mac" 0 "$PERIODICITY_MS" 0 >>"$LOG" 2>&1; then
-            log "started periodic capture every ${PERIODICITY_MS} ms for $mac on $vap"
+        # <bw>: on 5 GHz 2 = 80 MHz - the client's ACK then comes as a
+        # non-HT duplicate on all four 20 MHz subchannels, 4 x 52 tones in a
+        # record of the same size (measured 2026-09-27); on 2.4 GHz 0.
+        # <type> 0: from ACKs of QoS nulls (type 1 adds per-chain phases).
+        bw=0
+        case "$(iwconfig "$vap" 2>/dev/null | sed -n 's/.*Frequency:\([0-9]\).*/\1/p')" in 5) bw=$BW5 ;; esac
+        if wlanconfig "$vap" cfr start "$mac" "$bw" "$PERIODICITY_MS" 0 >>"$LOG" 2>&1; then
+            log "started periodic capture every ${PERIODICITY_MS} ms (bw $bw) for $mac on $vap"
+        elif [ "$bw" != 0 ] && wlanconfig "$vap" cfr start "$mac" 0 "$PERIODICITY_MS" 0 >>"$LOG" 2>&1; then
+            log "started periodic capture every ${PERIODICITY_MS} ms (20 MHz fallback) for $mac on $vap"
         else
             log "failed to start periodic capture for $mac on $vap"
         fi

@@ -74,6 +74,7 @@ type LinkState struct {
 	RSSI      int     `json:"rssi"`
 
 	Chains  int       `json:"chains"`            // receive chains in this link's captures
+	Tones   int       `json:"tones"`             // tones per chain: 52 = 20 MHz, 208 = 80 MHz
 	States  int       `json:"states"`            // transmit states seen (antennas/modes the client alternates)
 	Doppler []float64 `json:"doppler,omitempty"` // dB above the quiet level, per path speed in dopplerV (-2.5..2.5 m/s)
 	Speed   float64   `json:"speed"`             // how fast the moving path length changes, m/s (0 when still)
@@ -135,10 +136,11 @@ func (a *analyzer) ingest(files []dumpFile, rotation time.Duration) (records int
 		}
 		recs := splitRecords(f.data)
 		for k, rec := range recs {
-			h, chains := toneCSI(rec)
-			if h == nil {
+			h, lay, ok := toneCSI(rec)
+			if !ok {
 				continue
 			}
+			chains := lay.chains
 			est := start.Add(time.Duration(float64(span) * (float64(k) + 0.5) / float64(len(recs))))
 			l := a.links[rec.mac]
 			if l == nil {
@@ -146,7 +148,7 @@ func (a *analyzer) ingest(files []dumpFile, rotation time.Duration) (records int
 				a.links[rec.mac] = l
 			}
 			if l.width != len(h) {
-				*l = link{mac: rec.mac, width: len(h), chains: chains, dsp: newLinkDSP(chains, len(h))}
+				*l = link{mac: rec.mac, width: len(h), chains: chains, dsp: newLinkDSP(chains, len(h), lay.tonePositions())}
 			}
 			// The record's own capture time keeps the true spacing (records
 			// come 2-10 ms apart, with gaps); it is tied to local time once,
@@ -272,7 +274,7 @@ func (a *analyzer) tick(now time.Time) []LinkState {
 			MAC: mac, Rate: frameRate(l.frames), Metric: l.metric, Baseline: l.baseline,
 			Score: l.score, Motion: !stale && len(l.hist) >= warmupSamples && l.score > thr,
 			Threshold: thr, Noisy: thr > 8, Learning: len(l.hist) < warmupSamples,
-			Stale: stale, RSSI: int(l.rssi), States: len(l.dsp.states), Chains: l.chains,
+			Stale: stale, RSSI: int(l.rssi), States: len(l.dsp.states), Chains: l.chains, Tones: l.dsp.tones,
 		}
 		if !stale && l.baseline > 0 {
 			a.describeMovement(l, &st, win)

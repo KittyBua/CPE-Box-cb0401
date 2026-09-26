@@ -484,7 +484,7 @@ function renderDevices() {
     const [txt, cls] = stateText(l, s);
     const li = document.createElement('li');
     const band = s && s.ghz ? (s.ghz < 3 ? '2.4 GHz' : '5 GHz') : '';
-    const meta = [mac, band, s && s.rssi ? `signal ${s.rssi} dBm` : '', l && !l.stale ? `${l.rate.toFixed(0)} frames/s` : '', s && s.power_save ? 'power save' : '', l && l.noisy ? 'noisy link: needs a big change to count' : ''].filter(Boolean).join(' · ');
+    const meta = [mac, band, s && s.rssi ? `signal ${s.rssi} dBm` : '', l && !l.stale ? `${l.rate.toFixed(0)} frames/s${l.tones > 52 ? ' at 80 MHz' : ''}` : '', s && s.power_save ? 'power save' : '', l && l.noisy ? 'noisy link: needs a big change to count' : ''].filter(Boolean).join(' · ');
     li.innerHTML = `<div class="dev-top"><span class="dev-name"></span><span class="dev-state ${cls}">${txt}</span></div>
       <div class="dev-meta">${meta}</div>
       <div class="bar"><i style="width:${l && !l.stale ? Math.min(100, l.score / (2 * l.threshold) * 100) : 0}%"></i></div>`;

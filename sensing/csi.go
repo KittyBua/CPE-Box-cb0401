@@ -54,13 +54,30 @@ type txState struct {
 
 type linkDSP struct {
 	chains, tones int
+	pos           []float64 // tone positions (312.5 kHz grid), centred
 	states        []*txState
 	prev, pend    *csiFrame
 	dropped       int
 }
 
-func newLinkDSP(chains, width int) *linkDSP {
-	return &linkDSP{chains: chains, tones: width / chains}
+func newLinkDSP(chains, width int, pos []float64) *linkDSP {
+	d := &linkDSP{chains: chains, tones: width / chains}
+	if len(pos) != d.tones {
+		pos = make([]float64, d.tones)
+		for i := range pos {
+			pos[i] = float64(i)
+		}
+	}
+	var m float64
+	for _, p := range pos {
+		m += p
+	}
+	m /= float64(len(pos))
+	d.pos = make([]float64, len(pos))
+	for i, p := range pos {
+		d.pos[i] = p - m
+	}
+	return d
 }
 
 func vnorm(v []complex128) float64 {
@@ -149,7 +166,7 @@ func (d *linkDSP) push(t time.Time, h []complex128) *csiFrame {
 	st.lastUse = t
 
 	// common phase + timing slope against the state's static channel
-	y := alignTo(hn, st.static, C, F)
+	y := alignTo(hn, st.static, C, F, d.pos)
 	f := &csiFrame{t: t, state: best, y: y}
 
 	// glitch check on the pending frame, now that its successor is known
@@ -174,20 +191,34 @@ func (d *linkDSP) push(t time.Time, h []complex128) *csiFrame {
 	return out
 }
 
-// alignTo removes the common phase a and timing slope b (phase a + b*tone,
-// the same on every chain) that best line h up with the reference ref.
-func alignTo(h, ref []complex128, C, F int) []complex128 {
-	z := make([]complex128, F)
-	for c := 0; c < C; c++ {
-		for f := 0; f < F; f++ {
-			z[f] += h[c*F+f] * cmplx.Conj(ref[c*F+f])
+// alignTo removes, per 20 MHz subchannel (52 tones), the common phase a and
+// timing slope b (phase a + b*tone, the same on every chain) that best line
+// h up with the reference ref. Captured at 80 MHz, each subchannel arrives
+// with its own random phase (measured: uniform, record to record), so they
+// are aligned one by one.
+func alignTo(h, ref []complex128, C, F int, pos []float64) []complex128 {
+	y := make([]complex128, len(h))
+	for s0 := 0; s0 < F; s0 += 52 {
+		s1 := s0 + 52
+		if s1 > F {
+			s1 = F
 		}
+		alignSegment(h, ref, y, C, F, pos, s0, s1)
 	}
-	// unwrap and weighted least squares on phase(z) = a + b*x
+	return y
+}
+
+func alignSegment(h, ref, y []complex128, C, F int, pos []float64, s0, s1 int) {
 	var sw, sx, sy, sxx, sxy, prev, off float64
-	for f := 0; f < F; f++ {
-		ph := cmplx.Phase(z[f])
-		if f > 0 {
+	for f := s0; f < s1; f++ {
+		var z complex128
+		for c := 0; c < C; c++ {
+			z += h[c*F+f] * cmplx.Conj(ref[c*F+f])
+		}
+		ph := cmplx.Phase(z)
+		if f > s0 {
+			// the phase of z changes little from tone to tone: it is a
+			// residual against the static channel
 			for ph+off-prev > math.Pi {
 				off -= 2 * math.Pi
 			}
@@ -197,8 +228,8 @@ func alignTo(h, ref []complex128, C, F int) []complex128 {
 		}
 		ph += off
 		prev = ph
-		w := cmplx.Abs(z[f])
-		x := float64(f) - float64(F-1)/2
+		w := cmplx.Abs(z)
+		x := pos[f]
 		sw += w
 		sx += w * x
 		sy += w * ph
@@ -210,15 +241,12 @@ func alignTo(h, ref []complex128, C, F int) []complex128 {
 		b = (sw*sxy - sx*sy) / den
 		a = (sy - b*sx) / sw
 	}
-	y := make([]complex128, len(h))
-	for f := 0; f < F; f++ {
-		x := float64(f) - float64(F-1)/2
-		r := cmplx.Exp(complex(0, -(a + b*x)))
+	for f := s0; f < s1; f++ {
+		r := cmplx.Exp(complex(0, -(a + b*pos[f])))
 		for c := 0; c < C; c++ {
 			y[c*F+f] = h[c*F+f] * r
 		}
 	}
-	return y
 }
 
 // groupByState splits frames by transmit state, keeping order.
