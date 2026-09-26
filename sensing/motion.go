@@ -338,19 +338,10 @@ func (a *analyzer) describeMovement(l *link, st *LinkState, win []csiFrame) {
 		st.Toward = math.Round(100*sSum/wSum) / 100
 	}
 	if st.Motion && l.chains >= 3 {
-		groups := groupByState(win)
-		best := -1
-		for k, g := range groups {
-			if best < 0 || len(g) > len(groups[best]) {
-				best = k
-			}
+		sig, q, _ := dopplerSignature(newest(l.frames, time.Second), l.chains, l.dsp.tones, lambda)
+		for i := range sig {
+			sig[i] = math.Round(sig[i])
 		}
-		if best >= 0 && best < len(l.dsp.states) {
-			sig, q := signature(groups[best], l.dsp.states[best], l.chains, l.dsp.tones)
-			for i := range sig {
-				sig[i] = math.Round(sig[i])
-			}
-			st.Sig, st.SigQ = sig, math.Round(100*q)/100
-		}
+		st.Sig, st.SigQ = sig, math.Round(100*q)/100
 	}
 }

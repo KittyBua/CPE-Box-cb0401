@@ -77,6 +77,93 @@ type tracker struct {
 	nextID   int
 	bodies   []Body
 	sig      string // plan signature: reset when the plan changes
+	inside   *insideMask
+}
+
+// insideMask: which parts of the plan are indoors - everything that can't
+// be reached from outside the drawn walls without crossing one. Hypotheses
+// live only there (people outside the window move the links too, but they
+// are not in the flat).
+type insideMask struct {
+	x0, y0, cell float64
+	nx, ny       int
+	in           []bool
+	cells        []int // indexes of inside cells, for spawning
+}
+
+func buildInside(pl Plan) *insideMask {
+	if len(pl.Walls) < 3 {
+		return nil
+	}
+	b := [4]float64{math.Inf(1), math.Inf(1), math.Inf(-1), math.Inf(-1)}
+	for _, w := range pl.Walls {
+		b[0], b[1] = math.Min(b[0], math.Min(w[0], w[2])), math.Min(b[1], math.Min(w[1], w[3]))
+		b[2], b[3] = math.Max(b[2], math.Max(w[0], w[2])), math.Max(b[3], math.Max(w[1], w[3]))
+	}
+	m := &insideMask{x0: b[0] - 0.5, y0: b[1] - 0.5, cell: 0.1}
+	m.nx = int((b[2]-b[0]+1)/m.cell) + 1
+	m.ny = int((b[3]-b[1]+1)/m.cell) + 1
+	outside := make([]bool, m.nx*m.ny)
+	center := func(i, j int) (float64, float64) {
+		return m.x0 + (float64(i)+0.5)*m.cell, m.y0 + (float64(j)+0.5)*m.cell
+	}
+	var queue []int
+	for i := 0; i < m.nx; i++ {
+		for _, j := range []int{0, m.ny - 1} {
+			if !outside[j*m.nx+i] {
+				outside[j*m.nx+i] = true
+				queue = append(queue, j*m.nx+i)
+			}
+		}
+	}
+	for j := 0; j < m.ny; j++ {
+		for _, i := range []int{0, m.nx - 1} {
+			if !outside[j*m.nx+i] {
+				outside[j*m.nx+i] = true
+				queue = append(queue, j*m.nx+i)
+			}
+		}
+	}
+	for len(queue) > 0 {
+		c := queue[0]
+		queue = queue[1:]
+		i, j := c%m.nx, c/m.nx
+		ax, ay := center(i, j)
+		for _, d := range [][2]int{{1, 0}, {-1, 0}, {0, 1}, {0, -1}} {
+			ii, jj := i+d[0], j+d[1]
+			if ii < 0 || ii >= m.nx || jj < 0 || jj >= m.ny || outside[jj*m.nx+ii] {
+				continue
+			}
+			bx, by := center(ii, jj)
+			blocked := false
+			for _, w := range pl.Walls {
+				if segCross(ax, ay, bx, by, w[0], w[1], w[2], w[3]) {
+					blocked = true
+					break
+				}
+			}
+			if !blocked {
+				outside[jj*m.nx+ii] = true
+				queue = append(queue, jj*m.nx+ii)
+			}
+		}
+	}
+	m.in = make([]bool, len(outside))
+	for k, o := range outside {
+		if !o {
+			m.in[k] = true
+			m.cells = append(m.cells, k)
+		}
+	}
+	if len(m.cells) < 20 {
+		return nil // walls don't enclose anything (not closed): no mask
+	}
+	return m
+}
+
+func (m *insideMask) at(x, y float64) bool {
+	i, j := int((x-m.x0)/m.cell), int((y-m.y0)/m.cell)
+	return i >= 0 && i < m.nx && j >= 0 && j < m.ny && m.in[j*m.nx+i]
 }
 
 func newTracker() *tracker { return &tracker{rng: rand.New(rand.NewSource(1))} }
@@ -115,10 +202,16 @@ func segCross(ax, ay, bx, by, cx, cy, dx, dy float64) bool {
 func (t *tracker) spawn(b [4]float64) particle {
 	a := t.rng.Float64() * 2 * math.Pi
 	s := t.rng.Float64() * 1.0
-	return particle{
+	p := particle{
 		x: b[0] + t.rng.Float64()*(b[2]-b[0]), y: b[1] + t.rng.Float64()*(b[3]-b[1]),
 		vx: s * math.Cos(a), vy: s * math.Sin(a), w: 1,
 	}
+	if m := t.inside; m != nil {
+		c := m.cells[t.rng.Intn(len(m.cells))]
+		p.x = m.x0 + (float64(c%m.nx)+t.rng.Float64())*m.cell
+		p.y = m.y0 + (float64(c/m.nx)+t.rng.Float64())*m.cell
+	}
+	return p
 }
 
 // step advances the filter with one tick of link states.
@@ -180,6 +273,7 @@ func (t *tracker) step(now time.Time, pl Plan, links []LinkState) TrackState {
 	sig := planSig(pl)
 	if sig != t.sig || len(t.ps) != nParticles {
 		t.sig = sig
+		t.inside = buildInside(pl)
 		t.ps = make([]particle, nParticles)
 		for i := range t.ps {
 			t.ps[i] = t.spawn(b)
@@ -229,7 +323,7 @@ func (t *tracker) step(now time.Time, pl Plan, links []LinkState) TrackState {
 			p.vx, p.vy = p.vx*maxSpeed/s, p.vy*maxSpeed/s
 		}
 		nx, ny := p.x+p.vx*dt, p.y+p.vy*dt
-		blocked := nx < b[0] || nx > b[2] || ny < b[1] || ny > b[3]
+		blocked := nx < b[0] || nx > b[2] || ny < b[1] || ny > b[3] || (t.inside != nil && !t.inside.at(nx, ny))
 		for _, w := range pl.Walls {
 			if blocked {
 				break

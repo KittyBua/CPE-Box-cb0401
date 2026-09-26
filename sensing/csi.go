@@ -435,3 +435,83 @@ func principal(R []complex128, C int) ([]complex128, float64) {
 	}
 	return v, lam
 }
+
+// dopplerSignature: the angle signature of the one reflection that moves at
+// the window's strongest non-zero path speed (Widar2.0's idea: separate the
+// person from everything else by Doppler first, then look at the phases
+// across receive chains of that component only). Returns the phases of
+// chains 1.. relative to chain 0, how much of that bin's power is one
+// direction (0..1), and the path speed used.
+func dopplerSignature(frames []csiFrame, C, F int, lambda float64) (sig []float64, quality, speed float64) {
+	if C < 3 || len(frames) < minFrames {
+		return nil, 0, 0
+	}
+	g := groupByState(frames)
+	best := -1
+	for k, fr := range g {
+		if best < 0 || len(fr) > len(g[best]) {
+			best = k
+		}
+	}
+	fr := g[best]
+	if len(fr) < minFrames {
+		return nil, 0, 0
+	}
+	D, _ := dynamics(fr)
+	t0 := fr[0].t
+	span := fr[len(fr)-1].t.Sub(t0).Seconds()
+	if span <= 0 {
+		return nil, 0, 0
+	}
+	ts := make([]float64, len(fr))
+	ws := make([]float64, len(fr))
+	for k, f := range fr {
+		ts[k] = f.t.Sub(t0).Seconds()
+		ws[k] = 0.5 - 0.5*math.Cos(2*math.Pi*ts[k]/span)
+	}
+	var bestAcc []complex128
+	var bestE float64
+	for _, v := range dopplerV {
+		if math.Abs(v) < 0.3 {
+			continue
+		}
+		fq := v / lambda
+		acc := make([]complex128, C*F)
+		for k, d := range D {
+			r := cmplx.Exp(complex(0, -2*math.Pi*fq*ts[k])) * complex(ws[k], 0)
+			for i, x := range d {
+				acc[i] += x * r
+			}
+		}
+		var e float64
+		for _, x := range acc {
+			e += real(x)*real(x) + imag(x)*imag(x)
+		}
+		if e > bestE {
+			bestE, bestAcc, speed = e, acc, v
+		}
+	}
+	if bestAcc == nil {
+		return nil, 0, 0
+	}
+	R := make([]complex128, C*C)
+	for f := 0; f < F; f++ {
+		for i := 0; i < C; i++ {
+			for j := 0; j < C; j++ {
+				R[i*C+j] += bestAcc[i*F+f] * cmplx.Conj(bestAcc[j*F+f])
+			}
+		}
+	}
+	v, lam := principal(R, C)
+	var tr float64
+	for i := 0; i < C; i++ {
+		tr += real(R[i*C+i])
+	}
+	if tr <= 0 {
+		return nil, 0, 0
+	}
+	for c := 1; c < C; c++ {
+		sig = append(sig, cmplx.Phase(v[c]*cmplx.Conj(v[0]))*180/math.Pi)
+	}
+	return sig, lam / tr, speed
+}
