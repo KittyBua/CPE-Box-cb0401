@@ -31,17 +31,21 @@ import (
 )
 
 const (
-	nParticles    = 1500
-	reseedShare   = 0.08
-	maxSpeed      = 2.0  // m/s, walking
-	accelNoise    = 2.0  // m/s^2, how freely direction/speed change
-	sensScale     = 2.5  // m of extra path length at which a link's sensitivity falls to 1/e
-	powerSigma    = 0.12 // spread of the observed vs predicted share of moving power
-	bodyMinShare  = 0.25 // a cluster needs this share of the weight to count as a body
-	showAfter     = 1500 * time.Millisecond
-	bodyCell      = 0.4 // m, clustering grid
-	idleFadeAfter = 2 * time.Second
-	forgetAfter   = 20 * time.Second
+	nParticles   = 1500
+	reseedShare  = 0.08
+	maxSpeed     = 2.0  // m/s, walking
+	accelNoise   = 2.0  // m/s^2, how freely direction/speed change
+	sensScale    = 2.5  // m of extra path length at which a link's sensitivity falls to 1/e
+	powerSigma   = 0.12 // spread of the observed vs predicted share of moving power
+	bodyMinShare = 0.25 // a cluster needs this share of the weight to count as a body
+	cleanThr     = 6.0  // dB: links with a threshold up to this are quiet enough to raise an alarm
+	presenceOn   = 2500 * time.Millisecond
+	presenceOff  = 5 * time.Second
+	glideTime    = 2.5 // s, how slowly a shown ball follows the estimate
+	secondAfter  = 3 * time.Second
+	maxShown     = 2
+	bodyCell     = 0.4 // m, clustering grid
+	forgetAfter  = 20 * time.Second
 )
 
 type particle struct{ x, y, vx, vy, w float64 }
@@ -77,9 +81,11 @@ type tracker struct {
 	ps       []particle
 	lastT    time.Time
 	lastMove time.Time
-	moveFrom time.Time // start of the current stretch of movement
+	trigFrom time.Time // start of the current stretch of triggers
+	trigLast time.Time
+	present  bool
+	shown    []*shownBody
 	nextID   int
-	bodies   []Body
 	sig      string // plan signature: reset when the plan changes
 	inside   *insideMask
 	resp     map[string][]float64 // per link: its moving power at moments with movement
@@ -294,17 +300,7 @@ func (t *tracker) step(now time.Time, pl Plan, links []LinkState) TrackState {
 	}
 	t.lastT = now
 
-	moving := false
-	for _, l := range links {
-		if l.Motion {
-			moving = true
-		}
-	}
-	if !moving {
-		t.moveFrom = time.Time{}
-	} else if t.moveFrom.IsZero() {
-		t.moveFrom = now
-	}
+	moving := t.presence(now, links)
 	if moving {
 		t.lastMove = now
 		for _, o := range obs {
@@ -318,9 +314,9 @@ func (t *tracker) step(now time.Time, pl Plan, links []LinkState) TrackState {
 	}
 	st.Moving = math.Min(1, total/10)
 	if !moving {
-		// a pause: keep the hypotheses where they are (slowing down), show
-		// nothing; after a long quiet spell forget them - the next movement
-		// may start anywhere
+		// a pause: keep the hypotheses where they are (slowing down) and
+		// hold the shown balls for a moment; after a long quiet spell forget
+		// the hypotheses - the next movement may start anywhere
 		for i := range t.ps {
 			t.ps[i].vx *= 0.8
 			t.ps[i].vy *= 0.8
@@ -329,11 +325,9 @@ func (t *tracker) step(now time.Time, pl Plan, links []LinkState) TrackState {
 			for i := range t.ps {
 				t.ps[i] = t.spawn(b)
 			}
-			t.bodies = nil
 		}
-		if now.Sub(t.lastMove) > idleFadeAfter {
-			return st
-		}
+		st.Bodies = t.display(now, dt, nil)
+		return st
 	}
 	// predict: constant velocity with random acceleration; walls block
 	sa := accelNoise * math.Sqrt(dt)
@@ -403,10 +397,7 @@ func (t *tracker) step(now time.Time, pl Plan, links []LinkState) TrackState {
 	for i := range t.ps {
 		t.ps[i].w /= wsum
 	}
-	st.Bodies = t.cluster(b)
-	if t.moveFrom.IsZero() || now.Sub(t.moveFrom) < showAfter {
-		st.Bodies = []Body{} // a twitch of one tick is not somebody walking
-	}
+	st.Bodies = t.display(now, dt, t.cluster(b))
 	t.resample()
 	return st
 }
@@ -543,24 +534,119 @@ func (t *tracker) cluster(b [4]float64) []Body {
 		}
 		bodies = append(bodies, Body{X: round2(x), Y: round2(y), Share: round2(w), Spread: round2(sp / w), Speed: round2(math.Hypot(vx, vy) / w)})
 	}
-	// keep IDs: nearest previous body within 1.5 m
-	used := map[int]bool{}
-	for i := range bodies {
-		best, bd := -1, 1.5
-		for _, o := range t.bodies {
-			if d := math.Hypot(o.X-bodies[i].X, o.Y-bodies[i].Y); d < bd && !used[o.ID] {
-				best, bd = o.ID, d
+	return bodies
+}
+
+type shownBody struct {
+	Body
+	since, seen time.Time
+	confirmed   bool
+}
+
+// presence: movement counts only when a clean link (a low noise threshold -
+// here the vacuum's) sees it; links that are noisy by nature only help
+// place the ball. It must go on for presenceOn (short gaps allowed) to
+// switch presence on, and stays on until presenceOff without any trigger.
+// Returns whether this tick carries movement to track.
+func (t *tracker) presence(now time.Time, links []LinkState) bool {
+	trig, anyClean := false, false
+	for _, l := range links {
+		if l.Stale || l.Learning {
+			continue
+		}
+		if l.Threshold <= cleanThr {
+			anyClean = true
+			if l.Motion {
+				trig = true
 			}
 		}
-		if best < 0 {
-			t.nextID++
-			best = t.nextID
-		}
-		used[best] = true
-		bodies[i].ID = best
 	}
-	t.bodies = bodies
-	return bodies
+	if !anyClean { // no clean link at all: demand a clear excess on any link
+		for _, l := range links {
+			if !l.Stale && !l.Learning && l.Score > 1.5*l.Threshold {
+				trig = true
+			}
+		}
+	}
+	if trig {
+		if t.trigFrom.IsZero() || now.Sub(t.trigLast) > time.Second {
+			t.trigFrom = now
+		}
+		t.trigLast = now
+		if now.Sub(t.trigFrom) >= presenceOn {
+			t.present = true
+		}
+	} else if now.Sub(t.trigLast) > presenceOff {
+		t.present = false
+		t.trigFrom = time.Time{}
+	}
+	return trig
+}
+
+// display: what the page shows. Balls glide towards the estimate (they
+// don't jump), the strongest estimate is shown as soon as presence is on,
+// a second one only once it has persisted for secondAfter, and a ball
+// without support for secondAfter is dropped.
+func (t *tracker) display(now time.Time, dt float64, est []Body) []Body {
+	if !t.present {
+		t.shown = nil
+		return []Body{}
+	}
+	used := make([]bool, len(t.shown))
+	for _, e := range est {
+		best, bd := -1, 2.5
+		for i, s := range t.shown {
+			if d := math.Hypot(s.X-e.X, s.Y-e.Y); d < bd && !used[i] {
+				best, bd = i, d
+			}
+		}
+		if best >= 0 {
+			s := t.shown[best]
+			used[best] = true
+			k := math.Min(1, dt/glideTime)
+			s.X += (e.X - s.X) * k
+			s.Y += (e.Y - s.Y) * k
+			s.Share, s.Spread, s.Speed = e.Share, e.Spread, e.Speed
+			s.seen = now
+			if !s.confirmed && now.Sub(s.since) >= secondAfter {
+				s.confirmed = true
+			}
+			continue
+		}
+		t.nextID++
+		nb := &shownBody{Body: e, since: now, seen: now}
+		nb.ID = t.nextID
+		t.shown = append(t.shown, nb)
+		used = append(used, true)
+	}
+	confirmed := 0
+	for _, s := range t.shown {
+		if s.confirmed {
+			confirmed++
+		}
+	}
+	var keep []*shownBody
+	var out []Body
+	for _, s := range t.shown {
+		if now.Sub(s.seen) > secondAfter {
+			continue
+		}
+		if !s.confirmed && confirmed == 0 {
+			s.confirmed = true // the first ball needs no extra wait: presence already did
+			confirmed++
+		}
+		keep = append(keep, s)
+		if s.confirmed && len(out) < maxShown {
+			b := s.Body
+			b.X, b.Y = round2(b.X), round2(b.Y)
+			out = append(out, b)
+		}
+	}
+	t.shown = keep
+	if out == nil {
+		out = []Body{}
+	}
+	return out
 }
 
 func round2(f float64) float64 { return math.Round(f*100) / 100 }
