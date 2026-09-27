@@ -109,6 +109,21 @@ MAX_PEERS=4
 PEERS=""
 BAND=both
 BW5=2 # capture bandwidth code on 5 GHz: 0 = 20 MHz, 2 = 80 MHz
+# RCC5=1: on the 5 GHz radio, passive RCC capture (the radio snapshots the
+# channel of every received frame addressed to this AP - data, ACKs and
+# management from every 5 GHz client, phones with randomised MACs included)
+# instead of per-peer periodic capture. RCC and periodic capture exclude
+# each other per radio (firmware: "Not allowed: Periodic capture is
+# enabled"), so the 5 GHz periodic timer is switched off and 2.4 GHz keeps
+# periodic capture as before. Clients only transmit when they have traffic,
+# so the daemon also "pokes" POKE_MACS: tiny UDP datagrams to port 9
+# (discard) POKE_RATE times a second each - every one is answered with an
+# 802.11 ACK the RCC filter records, power save or not.
+RCC5=0
+POKE_MACS=""
+POKE_RATE=60
+CAPTURE_DUR_US=10000    # RCC: capture window length
+CAPTURE_INTVAL_US=10000 # RCC: window repeat interval
 # shellcheck disable=SC1090
 [ -f "$CONF" ] && . "$CONF"
 
@@ -119,6 +134,9 @@ ALL_RADIOS="wifi0 wifi1"
 # wifi1 = 5 GHz with wl0/wl5).
 VAPS=""
 RADIOS=""
+VAPS5=""
+RADIOS5=""
+RADIOS24=""
 for v in $ALL_VAPS; do
     ghz=$(iwconfig "$v" 2>/dev/null | sed -n 's/.*Frequency:\([0-9]\).*/\1/p')
     case "$BAND:$ghz" in
@@ -128,14 +146,35 @@ for v in $ALL_VAPS; do
     VAPS="$VAPS $v"
     r=$(cat "/sys/class/net/$v/parent" 2>/dev/null)
     case " $RADIOS " in *" $r "*) ;; *) [ -n "$r" ] && RADIOS="$RADIOS $r" ;; esac
+    if [ "$ghz" = 5 ]; then
+        VAPS5="$VAPS5 $v"
+        case " $RADIOS5 " in *" $r "*) ;; *) [ -n "$r" ] && RADIOS5="$RADIOS5 $r" ;; esac
+    else
+        case " $RADIOS24 " in *" $r "*) ;; *) [ -n "$r" ] && RADIOS24="$RADIOS24 $r" ;; esac
+    fi
 done
 [ -n "$RADIOS" ] || RADIOS="$ALL_RADIOS"
+# Peer selection (periodic capture) skips the 5 GHz VAPs when RCC covers them.
+VAPS_P="$VAPS"
+if [ "$RCC5" = 1 ]; then
+    VAPS_P=""
+    for v in $VAPS; do
+        case " $VAPS5 " in *" $v "*) ;; *) VAPS_P="$VAPS_P $v" ;; esac
+    done
+fi
 TIMER_PARAM=0x1194 # CFR global periodic timer enable, see cfr-trigger's package doc
 
 log() { echo "$(date '+%F %T') $*" >>"$LOG"; }
 
 enable_timer() {
     for r in $RADIOS; do
+        if [ "$RCC5" = 1 ]; then
+            # RCC and the periodic timer exclude each other on a radio.
+            case " $RADIOS5 " in *" $r "*)
+                "$TRIGGER" -iface "$r" -param "$TIMER_PARAM" -value 0 >>"$LOG" 2>&1
+                continue ;;
+            esac
+        fi
         cur=$(cfg80211tool "$r" get_cfr_timer 2>/dev/null | sed -n 's/.*get_cfr_timer://p')
         [ "$cur" = "1" ] && continue
         if [ -x "$TRIGGER" ] && "$TRIGGER" -iface "$r" -param "$TIMER_PARAM" -value 1 >>"$LOG" 2>&1; then
@@ -151,7 +190,7 @@ enable_timer() {
 # associated - the best stationarity hint available: a TV or a desktop
 # stays connected for days, phones and laptops come and go.
 candidates() {
-    for vap in $VAPS; do
+    for vap in $VAPS_P; do
         wlanconfig "$vap" list sta 2>/dev/null |
             awk -v v="$vap" 'NR>1 && /^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}[[:space:]]/ {
                 n = split($20, t, ":"); secs = (n == 3) ? t[1] * 3600 + t[2] * 60 + t[3] : 0
@@ -279,24 +318,92 @@ daemon_pid() {
 # station once; the ones that weren't capturing just log "periodic cfr
 # not started" in dmesg.
 stop_all_stations() {
-    candidates | while read -r vap mac _rest; do
-        wlanconfig "$vap" cfr stop "$mac" >/dev/null 2>&1
+    # Every VAP, not just the periodic-selection ones: an orphaned periodic
+    # capture on a 5 GHz peer would block the RCC commit there.
+    for vap in $VAPS; do
+        wlanconfig "$vap" list sta 2>/dev/null |
+            awk 'NR>1 && /^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}[[:space:]]/ {print tolower($1)}' |
+            while read -r mac; do
+                wlanconfig "$vap" cfr stop "$mac" >/dev/null 2>&1
+            done
     done
     : >"$STATE"
 }
 
+POKE_PIDFILE=/tmp/cfr_poke.pid
+
+# rcc_setup arms the passive capture on the first 5 GHz VAP's radio: one
+# TA/RA group - every frame whose receiver address is this AP's BSSID, any
+# subtype, any bandwidth. Verified live 2026-09-27: this captures uplink
+# data, ACKs and management of all 5 GHz clients into the same
+# /tmp/cfr_dump_wifi*.bin relay files the periodic mode uses.
+rcc_setup() {
+    v5="${VAPS5# }"; v5="${v5%% *}"
+    [ -n "$v5" ] || return 1
+    bssid=$(cat "/sys/class/net/$v5/address" 2>/dev/null)
+    [ -n "$bssid" ] || return 1
+    wlanconfig "$v5" cfr ta_ra_addr 0 00:00:00:00:00:00 00:00:00:00:00:00 "$bssid" ff:ff:ff:ff:ff:ff >>"$LOG" 2>&1
+    wlanconfig "$v5" cfr subtype 0 0xffff 0xffff 0xffff >>"$LOG" 2>&1
+    wlanconfig "$v5" cfr bw_nss 0 0xf 0xff >>"$LOG" 2>&1
+    wlanconfig "$v5" cfr en_cfg 0x1 >>"$LOG" 2>&1
+    wlanconfig "$v5" cfr m_ta_ra_filter enable >>"$LOG" 2>&1
+    wlanconfig "$v5" cfr capture_dur "$CAPTURE_DUR_US" >>"$LOG" 2>&1
+    wlanconfig "$v5" cfr capture_intval "$CAPTURE_INTVAL_US" >>"$LOG" 2>&1
+    if wlanconfig "$v5" cfr commit >>"$LOG" 2>&1; then
+        log "RCC armed on $v5: all frames to $bssid, ${CAPTURE_DUR_US}us every ${CAPTURE_INTVAL_US}us"
+    else
+        log "RCC commit failed on $v5 - see above"
+    fi
+}
+
+disable_rcc() {
+    v5="${VAPS5# }"; v5="${v5%% *}"
+    [ -n "$v5" ] || return 0
+    wlanconfig "$v5" cfr disable_all >>"$LOG" 2>&1
+    wlanconfig "$v5" cfr commit >>"$LOG" 2>&1
+}
+
+stop_poke() {
+    [ -f "$POKE_PIDFILE" ] && kill "$(cat "$POKE_PIDFILE")" 2>/dev/null
+    rm -f "$POKE_PIDFILE"
+}
+
+# ensure_poke keeps one cfr-trigger -poke running against the POKE_MACS
+# that are currently associated, restarting it when the IP list changes.
+ensure_poke() {
+    [ "$RCC5" = 1 ] && [ -n "$POKE_MACS" ] || return 0
+    ips=""
+    for m in $POKE_MACS; do
+        ip=$(awk -v m="$(echo "$m" | tr 'A-F' 'a-f')" 'tolower($2)==m {print $3; exit}' /tmp/dhcp.leases 2>/dev/null)
+        [ -n "$ip" ] && ips="$ips,$ip"
+    done
+    ips="${ips#,}"
+    if [ -z "$ips" ]; then stop_poke; rm -f /tmp/cfr_poke.ips; return 0; fi
+    if [ -f "$POKE_PIDFILE" ] && kill -0 "$(cat "$POKE_PIDFILE")" 2>/dev/null &&
+        [ "$(cat /tmp/cfr_poke.ips 2>/dev/null)" = "$ips" ]; then
+        return 0
+    fi
+    stop_poke
+    "$TRIGGER" -poke "$ips" -rate "$POKE_RATE" >>"$LOG" 2>&1 &
+    echo $! >"$POKE_PIDFILE"
+    echo "$ips" >/tmp/cfr_poke.ips
+    log "poking $ips at ${POKE_RATE}/s each for RCC ACK capture"
+}
+
 run_daemon() {
     echo $$ >"$PIDFILE"
-    trap 'stop_readers; stop_all_captures; disable_timer; rm -f "$PIDFILE"; exit 0' TERM INT
-    log "daemon start: band=$BAND vaps=$VAPS radios=$RADIOS periodicity=${PERIODICITY_MS}ms max_peers=$MAX_PEERS pinned='$PEERS'"
+    trap 'stop_readers; stop_poke; stop_all_captures; disable_rcc; disable_timer; rm -f "$PIDFILE"; exit 0' TERM INT
+    log "daemon start: band=$BAND vaps=$VAPS radios=$RADIOS rcc5=$RCC5 periodicity=${PERIODICITY_MS}ms max_peers=$MAX_PEERS pinned='$PEERS' poke='$POKE_MACS'"
     enable_timer
     stop_all_stations
+    [ "$RCC5" = 1 ] && rcc_setup
     last=0
     overflow_since=0
     while :; do
         now=$(date +%s)
         if [ $((now - last)) -ge "$RECONCILE_SECONDS" ]; then
             reconcile
+            ensure_poke
             last=$now
         fi
         start_readers
@@ -308,7 +415,9 @@ run_daemon() {
             [ "$overflow_since" -gt 0 ] || overflow_since=$now
             if [ $((now - overflow_since)) -ge "$NO_CONSUMER_SECONDS" ]; then
                 log "nobody has collected the captures for ${NO_CONSUMER_SECONDS}s (backlog ${backlog} KB) - stopping"
+                stop_poke
                 stop_all_captures
+                disable_rcc
                 disable_timer
                 rm -f /tmp/cfr_dump_wifi*.bin "$PIDFILE"
                 exit 0
@@ -326,8 +435,10 @@ stop_daemon() {
         sleep 2
     else
         # No daemon (or its pidfile is gone): still make sure nothing is
-        # left capturing - every associated station and the timer.
+        # left capturing - every associated station, RCC and the timer.
+        stop_poke
         stop_all_stations
+        disable_rcc
         disable_timer
     fi
     # Make sure no stray reader survives (it would keep writing into /tmp

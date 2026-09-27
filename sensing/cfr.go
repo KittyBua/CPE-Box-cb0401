@@ -7,6 +7,8 @@ package main
 
 import (
 	"encoding/binary"
+	"fmt"
+	"math"
 	"net"
 )
 
@@ -24,6 +26,7 @@ type rawRecord struct {
 	mac     string
 	ts      uint64 // capture time, microseconds on the router's clock
 	wide    bool   // captured wider than 20 MHz
+	rcc     bool   // passive RCC capture (any frame to the AP), not a periodic per-peer one
 	rssi    int8   // strongest chain's RSSI in dBm, 0 if unknown
 	payload []byte // I/Q region, from successPayloadOff to the end
 }
@@ -88,6 +91,7 @@ func splitRecords(buf []byte) []rawRecord {
 		records = append(records, rawRecord{
 			ts:      binary.LittleEndian.Uint64(body[offTimestamp:]),
 			wide:    body[offBandwidth] != 0,
+			rcc:     body[offCaptureKind] == 6,
 			mac:     net.HardwareAddr(body[offMAC : offMAC+6]).String(),
 			rssi:    rssi,
 			payload: body[successPayloadOff:],
@@ -113,7 +117,10 @@ func splitRecords(buf []byte) []rawRecord {
 //     2 blocks of 108; 52 tones around entry 79.
 //
 // Other record sizes haven't been seen often enough to map and are skipped.
-const offBandwidth = 0x1a // 0 = captured at 20 MHz, 1 = wider (80 MHz duplicate)
+const (
+	offBandwidth   = 0x1a // 0 = captured at 20 MHz, 1 = wider (80 MHz duplicate)
+	offCaptureKind = 0x1b // 0/1 = periodic per-peer capture, 6 = RCC (passive, any received frame)
+)
 
 type cfrLayout struct {
 	pairs, chains, block, first int
@@ -141,28 +148,82 @@ func (l cfrLayout) tonePositions() []float64 {
 	return p
 }
 
-func layoutOf(rec rawRecord) (cfrLayout, bool) {
+func layoutOf(rec rawRecord) (cfrLayout, string, bool) {
 	n := len(rec.payload) / 4
 	for _, l := range cfrLayouts {
 		if n != l.pairs {
 			continue
 		}
-		if l.chains == 4 && rec.wide {
-			return wide5, true
+		if l.chains == 4 && rec.rcc {
+			return rccLayout(rec.payload)
 		}
-		return l, true
+		if l.chains == 4 && rec.wide {
+			return wide5, "", true
+		}
+		return l, "", true
 	}
-	return cfrLayout{}, false
+	return cfrLayout{}, "", false
+}
+
+// rccCentres: the 160 MHz capture grid holds eight 20 MHz subchannels. A
+// passively captured frame occupies whichever of them it was sent on (a
+// 20 MHz ACK one, an 80 MHz duplicate four, ...), so which entries carry
+// channel varies per frame and is detected from the record itself.
+var rccCentres = []int{31, 95, 159, 223, 287, 351, 415, 479}
+
+// rccLayout finds the occupied subchannels of one RCC record from chain
+// 0's amplitudes: the guard entries between subchannels give the noise
+// floor, and a subchannel counts as occupied when its mean amplitude is
+// well above it. The shape string keys records of the same occupancy
+// together (each shape is its own stream with a consistent tone set).
+func rccLayout(payload []byte) (cfrLayout, string, bool) {
+	amp := func(i int) float64 {
+		k := (1 + i) * 4 // chain 0 block starts after the leading pair
+		re := float64(int16(binary.LittleEndian.Uint16(payload[k:])))
+		im := float64(int16(binary.LittleEndian.Uint16(payload[k+2:])))
+		return math.Hypot(re, im)
+	}
+	var noise float64
+	var nn int
+	for _, c := range rccCentres {
+		for i := c + 29; i < c+35; i++ { // guard entries past each subchannel's edge
+			if i < 512 {
+				noise += amp(i)
+				nn++
+			}
+		}
+	}
+	noise /= float64(nn)
+	var centres []int
+	shape := 0
+	for bit, c := range rccCentres {
+		var m float64
+		for k := -26; k <= 26; k++ {
+			if k != 0 {
+				m += amp(c + k)
+			}
+		}
+		m /= 52
+		if m > 4*noise+40 {
+			centres = append(centres, c)
+			shape |= 1 << bit
+		}
+	}
+	if len(centres) == 0 {
+		return cfrLayout{}, "", false
+	}
+	l := cfrLayout{pairs: 2049, chains: 4, block: 512, first: 1, centres: centres}
+	return l, fmt.Sprintf("#%02x", shape), true
 }
 
 // toneCSI returns the complex channel of one record, chain by chain
 // (chains x tones values), and its layout; ok false for an unmapped record
 // size. Each record carries its own random phase and timing offset, common
 // to all chains - see csi.go for how that is removed.
-func toneCSI(rec rawRecord) ([]complex128, cfrLayout, bool) {
-	l, ok := layoutOf(rec)
+func toneCSI(rec rawRecord) ([]complex128, cfrLayout, string, bool) {
+	l, shape, ok := layoutOf(rec)
 	if !ok {
-		return nil, l, false
+		return nil, l, "", false
 	}
 	out := make([]complex128, 0, l.chains*52*len(l.centres))
 	for c := 0; c < l.chains; c++ {
@@ -179,5 +240,5 @@ func toneCSI(rec rawRecord) ([]complex128, cfrLayout, bool) {
 			}
 		}
 	}
-	return out, l, true
+	return out, l, shape, true
 }

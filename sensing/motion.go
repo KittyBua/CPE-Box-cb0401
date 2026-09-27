@@ -36,12 +36,14 @@ const (
 	staleAfter     = 3 * time.Second
 	minFrames      = 10 // per metric window
 	dopplerWindow  = 500 * time.Millisecond
-	warmupSamples  = 40 // ~10 s of ticks before a link reports a score
+	warmupSamples  = 40  // ~10 s of ticks before a link reports a score
+	rccMinRecords  = 150 // passive capture: records from a transmitter before it becomes a link
 )
 
 type link struct {
-	mac      string
-	width    int // values per frame (chains x 52); a change resets the link
+	mac      string // map key: MAC, plus the occupancy shape for passive captures
+	base     string // the transmitter's MAC
+	width    int    // values per frame (chains x 52); a change resets the link
 	chains   int
 	dsp      *linkDSP
 	frames   []csiFrame
@@ -85,13 +87,14 @@ type LinkState struct {
 type analyzer struct {
 	mu        sync.Mutex
 	links     map[string]*link
+	seen      map[string]int // passive streams counted toward rccMinRecords
 	threshold float64
 	lastTick  time.Time
 	span      map[string]time.Duration // observed time each dump file covers, per radio
 }
 
 func newAnalyzer(threshold float64) *analyzer {
-	return &analyzer{links: map[string]*link{}, threshold: threshold}
+	return &analyzer{links: map[string]*link{}, seen: map[string]int{}, threshold: threshold}
 }
 
 // ingest adds a batch of dump files. cfr_test_app names each file after the
@@ -107,6 +110,9 @@ func (a *analyzer) ingest(files []dumpFile, rotation time.Duration) (records int
 	defer a.mu.Unlock()
 	if a.span == nil {
 		a.span = map[string]time.Duration{}
+	}
+	if len(a.seen) > 2000 {
+		a.seen = map[string]int{} // forget half-counted passers-by, not links
 	}
 	starts := make([]time.Time, len(files))
 	for i, f := range files {
@@ -135,19 +141,32 @@ func (a *analyzer) ingest(files []dumpFile, rotation time.Duration) (records int
 		}
 		recs := splitRecords(f.data)
 		for k, rec := range recs {
-			h, lay, ok := toneCSI(rec)
+			h, lay, shape, ok := toneCSI(rec)
 			if !ok || rec.mac == "00:00:00:00:00:00" {
 				continue
 			}
 			chains := lay.chains
 			est := start.Add(time.Duration(float64(span) * (float64(k) + 0.5) / float64(len(recs))))
-			l := a.links[rec.mac]
+			// One passively captured client can transmit in several formats
+			// (a 20 MHz ACK, an 80 MHz duplicate, ...); each occupancy shape
+			// is a stream of its own, keyed mac+shape. A shape only becomes
+			// a link once it has shown up enough - passive capture also sees
+			// one-off frames from whoever probes the AP.
+			key := rec.mac + shape
+			l := a.links[key]
 			if l == nil {
-				l = &link{mac: rec.mac}
-				a.links[rec.mac] = l
+				if shape != "" {
+					a.seen[key]++
+					if a.seen[key] < rccMinRecords {
+						continue
+					}
+					delete(a.seen, key)
+				}
+				l = &link{mac: key, base: rec.mac}
+				a.links[key] = l
 			}
 			if l.width != len(h) {
-				*l = link{mac: rec.mac, width: len(h), chains: chains, dsp: newLinkDSP(chains, len(h), lay.tonePositions())}
+				*l = link{mac: key, base: rec.mac, width: len(h), chains: chains, dsp: newLinkDSP(chains, len(h), lay.tonePositions())}
 			}
 			// The record's own capture time keeps the true spacing (records
 			// come 2-10 ms apart, with gaps); it is tied to local time once,
@@ -270,8 +289,12 @@ func (a *analyzer) tick(now time.Time) []LinkState {
 		if thr <= 0 {
 			thr = a.threshold
 		}
+		base := l.base
+		if base == "" {
+			base = mac
+		}
 		st := LinkState{
-			MAC: mac, Rate: frameRate(l.frames), Metric: l.metric, Baseline: l.baseline,
+			MAC: base, Rate: frameRate(l.frames), Metric: l.metric, Baseline: l.baseline,
 			Score: l.score, Motion: !stale && len(l.hist) >= warmupSamples && l.score > thr,
 			Threshold: thr, Noisy: thr > 8, Learning: len(l.hist) < warmupSamples,
 			Stale: stale, RSSI: int(l.rssi), States: len(l.dsp.states), Chains: l.chains, Tones: l.dsp.tones,
@@ -282,6 +305,20 @@ func (a *analyzer) tick(now time.Time) []LinkState {
 		states = append(states, st)
 
 	}
+	// One transmitter can have several passive streams (one per frame
+	// format); the page and the tracker see the busiest one per MAC.
+	best := map[string]int{}
+	for i, st := range states {
+		j, ok := best[st.MAC]
+		if !ok || st.Rate > states[j].Rate {
+			best[st.MAC] = i
+		}
+	}
+	merged := make([]LinkState, 0, len(best))
+	for _, i := range best {
+		merged = append(merged, states[i])
+	}
+	states = merged
 	sort.Slice(states, func(i, j int) bool { return states[i].MAC < states[j].MAC })
 
 	return states
