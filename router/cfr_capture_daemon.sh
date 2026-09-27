@@ -121,9 +121,10 @@ BW5=2 # capture bandwidth code on 5 GHz: 0 = 20 MHz, 2 = 80 MHz
 # 802.11 ACK the RCC filter records, power save or not.
 RCC5=0
 POKE_MACS=""
+POKE_ALL5=1  # also poke every other associated 5 GHz station (phones answer too)
 POKE_RATE=60
-CAPTURE_DUR_US=10000    # RCC: capture window length
-CAPTURE_INTVAL_US=10000 # RCC: window repeat interval
+CAPTURE_COUNT=4         # RCC: at most this many snapshots per interval (the export tops out ~4 MB/s)
+CAPTURE_INTVAL_US=20000 # RCC: snapshot-budget interval
 # shellcheck disable=SC1090
 [ -f "$CONF" ] && . "$CONF"
 
@@ -342,18 +343,24 @@ rcc_setup() {
     [ -n "$v5" ] || return 1
     bssid=$(cat "/sys/class/net/$v5/address" 2>/dev/null)
     [ -n "$bssid" ] || return 1
+    # Clear whatever RCC config is active first: committing an unchanged
+    # config is refused (netlink error 4), e.g. after a daemon restart.
+    wlanconfig "$v5" cfr disable_all >>"$LOG" 2>&1
+    wlanconfig "$v5" cfr commit >>"$LOG" 2>&1
+    # Short elicited frames only: ACK (bit 13) + BlockAck (bit 9) control
+    # frames and Null (bit 4) + QoS Null (bit 12) data frames. Every poked
+    # datagram is answered with one; capturing full data frames as well let
+    # one busy laptop flood the export (334 records/s measured 2026-09-27).
     wlanconfig "$v5" cfr ta_ra_addr 0 00:00:00:00:00:00 00:00:00:00:00:00 "$bssid" ff:ff:ff:ff:ff:ff >>"$LOG" 2>&1
-    wlanconfig "$v5" cfr subtype 0 0xffff 0xffff 0xffff >>"$LOG" 2>&1
+    wlanconfig "$v5" cfr subtype 0 0x0000 0x2200 0x1010 >>"$LOG" 2>&1
     wlanconfig "$v5" cfr bw_nss 0 0xf 0xff >>"$LOG" 2>&1
     wlanconfig "$v5" cfr en_cfg 0x1 >>"$LOG" 2>&1
     wlanconfig "$v5" cfr m_ta_ra_filter enable >>"$LOG" 2>&1
-    wlanconfig "$v5" cfr capture_dur "$CAPTURE_DUR_US" >>"$LOG" 2>&1
+    wlanconfig "$v5" cfr capture_count "$CAPTURE_COUNT" >>"$LOG" 2>&1
+    wlanconfig "$v5" cfr capture_intervalmode_sel 1 >>"$LOG" 2>&1
     wlanconfig "$v5" cfr capture_intval "$CAPTURE_INTVAL_US" >>"$LOG" 2>&1
-    if wlanconfig "$v5" cfr commit >>"$LOG" 2>&1; then
-        log "RCC armed on $v5: all frames to $bssid, ${CAPTURE_DUR_US}us every ${CAPTURE_INTVAL_US}us"
-    else
-        log "RCC commit failed on $v5 - see above"
-    fi
+    wlanconfig "$v5" cfr commit >>"$LOG" 2>&1
+    log "RCC armed on $v5: ACK/BA/null to $bssid, <=${CAPTURE_COUNT} snapshots per ${CAPTURE_INTVAL_US}us (commit output above)"
 }
 
 disable_rcc() {
@@ -371,11 +378,24 @@ stop_poke() {
 # ensure_poke keeps one cfr-trigger -poke running against the POKE_MACS
 # that are currently associated, restarting it when the IP list changes.
 ensure_poke() {
-    [ "$RCC5" = 1 ] && [ -n "$POKE_MACS" ] || return 0
+    [ "$RCC5" = 1 ] || return 0
+    macs="$POKE_MACS"
+    if [ "$POKE_ALL5" = 1 ]; then
+        assoc=$(for v in $VAPS5; do
+            wlanconfig "$v" list sta 2>/dev/null |
+                awk 'NR>1 && /^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}[[:space:]]/ {print tolower($1)}'
+        done)
+        for m in $assoc; do
+            case " $(echo "$macs" | tr 'A-F' 'a-f') " in *" $m "*) ;; *) macs="$macs $m" ;; esac
+        done
+    fi
+    [ -n "$macs" ] || { stop_poke; rm -f /tmp/cfr_poke.ips; return 0; }
     ips=""
-    for m in $POKE_MACS; do
+    n=0
+    for m in $macs; do
+        [ "$n" -ge 8 ] && break
         ip=$(awk -v m="$(echo "$m" | tr 'A-F' 'a-f')" 'tolower($2)==m {print $3; exit}' /tmp/dhcp.leases 2>/dev/null)
-        [ -n "$ip" ] && ips="$ips,$ip"
+        [ -n "$ip" ] && { ips="$ips,$ip"; n=$((n + 1)); }
     done
     ips="${ips#,}"
     if [ -z "$ips" ]; then stop_poke; rm -f /tmp/cfr_poke.ips; return 0; fi

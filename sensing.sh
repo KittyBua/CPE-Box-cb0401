@@ -225,26 +225,25 @@ if [ "$N_ANCHORS" = 0 ]; then
   exit 1
 fi
 [ "$N_ANCHORS" -gt 4 ] && echo "Note: the router's firmware handled 4 captured devices in testing; more may be refused."
-# 5 GHz runs passive RCC capture (every frame to the AP - the chosen
-# anchors, poked so they answer steadily, plus phones and laptops with
-# whatever they transmit anyway); 2.4 GHz anchors use periodic capture at
-# 3 ms (~1 KB records).
-CHOSEN24=""; CHOSEN5=""
+# Capture rate: 5 GHz records are 8.4 KB and the SSH export carries
+# ~4 MB/s, so the 5 GHz period grows with the number of 5 GHz anchors;
+# 2.4 GHz records are ~1 KB and always run at 3 ms. Periodic per-peer
+# capture stays the default: the passive RCC mode was measured slower for
+# anchors on this firmware (16-70/s vs 90-220/s - a sleeping or IoT
+# client's replies are held for DTIM and aggregated; see
+# cfr_capture_daemon.sh, RCC5=1 arms it for experiments).
+N5=0
 for mac in $CHOSEN; do
-  if echo "$DEVICES" | awk -v m="$mac" '$1 == m && $2 ~ /^2/ {f = 1} END {exit !f}'; then
-    CHOSEN24="$CHOSEN24 $mac"
-  else
-    CHOSEN5="$CHOSEN5 $mac"
-  fi
+  echo "$DEVICES" | awk -v m="$mac" '$1 == m && $2 !~ /^2/ {f = 1} END {exit !f}' && N5=$((N5 + 1))
 done
-CHOSEN24="$(echo "$CHOSEN24" | xargs)"; CHOSEN5="$(echo "$CHOSEN5" | xargs)"
+PERIOD=3; [ "$N5" -ge 2 ] && PERIOD=5; [ "$N5" -ge 3 ] && PERIOD=8
 ssh_router "touch $CONF; sed -i '/^BAND=/d; /^PEERS=/d; /^MAX_PEERS=/d; /^PERIODICITY_MS=/d; /^PERIODICITY_MS_24=/d; /^RCC5=/d; /^POKE_MACS=/d; /^POKE_RATE=/d' $CONF
-  printf 'BAND=both\nPEERS=\"%s\"\nMAX_PEERS=%s\nPERIODICITY_MS=3\nPERIODICITY_MS_24=3\nRCC5=1\nPOKE_MACS=\"%s\"\nPOKE_RATE=60\n' '$CHOSEN24' '$N_ANCHORS' '$CHOSEN5' >> $CONF"
+  printf 'BAND=both\nPEERS=\"%s\"\nMAX_PEERS=%s\nPERIODICITY_MS=%s\nPERIODICITY_MS_24=3\nRCC5=0\n' '$CHOSEN' '$N_ANCHORS' '$PERIOD' >> $CONF"
 if [ "$CHOSEN" != "$SAVED" ] && [ -n "$SAVED" ]; then
   # a running daemon keeps its old settings; the map isn't running yet
   ssh_router 'sh /etc/crontabs/patches/cfr_capture_daemon.sh --stop' >/dev/null 2>&1 || true
 fi
-echo "anchors: $(for mac in $CHOSEN; do echo "$DEVICES" | awk -v m="$mac" '$1 == m {print $6}'; done | tr '\n' ' ')(2.4 GHz periodic 3 ms; 5 GHz passive RCC + poke)"
+echo "anchors: $(for mac in $CHOSEN; do echo "$DEVICES" | awk -v m="$mac" '$1 == m {print $6}'; done | tr '\n' ' ')(2.4 GHz every 3 ms; 5 GHz every ${PERIOD} ms at 80 MHz)"
 
 say "Building the motion map"
 ( cd "$REPO_DIR/sensing" && go build -o sensing . )

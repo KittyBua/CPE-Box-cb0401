@@ -365,12 +365,17 @@ func main() {
 	value := flag.Uint("value", 0, "value for -param")
 	flag.BoolVar(&debug, "debug", false, "print every raw netlink reply message received")
 	poke := flag.String("poke", "", "traffic mode: send tiny UDP datagrams to these comma-separated IPs (port 9, discard) so that each one answers with an 802.11 ACK the radio can capture (RCC ctrl-frame filter); no CFR command is sent")
-	rate := flag.Uint("rate", 200, "for -poke: datagrams per second per address")
-	seconds := flag.Uint("seconds", 0, "for -poke: stop after this many seconds (0 = run until killed)")
+	poll := flag.String("poll", "", "poll mode: hostapd POLL_STA via its control socket - '<ctrl dir>:<iface>:<mac>,<mac>,...' (e.g. /var/run/hostapd-wifi1:wl0:aa:bb:cc:dd:ee:ff). The AP sends each station a QoS null immediately, power save or not, and the station's ACK is captured; no CFR command is sent")
+	rate := flag.Uint("rate", 200, "for -poke/-poll: sends per second per address")
+	seconds := flag.Uint("seconds", 0, "for -poke/-poll: stop after this many seconds (0 = run until killed)")
 	flag.Parse()
 
 	if *poke != "" {
 		pokeLoop(strings.Split(*poke, ","), *rate, *seconds)
+		return
+	}
+	if *poll != "" {
+		pollLoop(*poll, *rate, *seconds)
 		return
 	}
 
@@ -572,6 +577,63 @@ func pokeLoop(addrs []string, rate, seconds uint) {
 			return
 		}
 		conns[i%len(conns)].Write([]byte{0})
+		i++
+	}
+}
+
+// pollLoop asks hostapd to POLL_STA each station in turn, rate times a
+// second per station, over its control socket. hostapd answers a poll by
+// transmitting a QoS null to the station right away - unlike buffered
+// data, this is not held for a sleeping station's DTIM and not aggregated,
+// so every poll yields one immediate 802.11 ACK for the RCC capture.
+func pollLoop(spec string, rate, seconds uint) {
+	parts := strings.SplitN(spec, ":", 3)
+	if len(parts) != 3 {
+		fmt.Fprintln(os.Stderr, "-poll wants <ctrl dir>:<iface>:<mac>,<mac>,...")
+		os.Exit(2)
+	}
+	dir, iface := parts[0], parts[1]
+	var macs []string
+	for _, m := range strings.Split(parts[2], ",") {
+		if m = strings.TrimSpace(m); m != "" {
+			macs = append(macs, m)
+		}
+	}
+	if len(macs) == 0 || rate == 0 {
+		return
+	}
+	// hostapd's ctrl protocol answers to the sender's own bound address;
+	// an abstract-namespace name needs no file and no cleanup.
+	laddr := &net.UnixAddr{Name: fmt.Sprintf("@cfr-poll-%d", os.Getpid()), Net: "unixgram"}
+	raddr := &net.UnixAddr{Name: dir + "/" + iface, Net: "unixgram"}
+	c, err := net.DialUnix("unixgram", laddr, raddr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "poll: %v\n", err)
+		os.Exit(1)
+	}
+	defer c.Close()
+	c.SetReadBuffer(1 << 16)
+	go func() { // drain the OK replies so the socket buffer never fills
+		buf := make([]byte, 256)
+		for {
+			if _, err := c.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+	period := time.Second / time.Duration(rate*uint(len(macs)))
+	end := time.Time{}
+	if seconds > 0 {
+		end = time.Now().Add(time.Duration(seconds) * time.Second)
+	}
+	t := time.NewTicker(period)
+	defer t.Stop()
+	i := 0
+	for now := range t.C {
+		if !end.IsZero() && now.After(end) {
+			return
+		}
+		fmt.Fprintf(c, "POLL_STA %s", macs[i%len(macs)])
 		i++
 	}
 }
