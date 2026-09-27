@@ -232,8 +232,9 @@ for mac in $CHOSEN; do
   echo "$DEVICES" | awk -v m="$mac" '$1 == m && $2 !~ /^2/ {f = 1} END {exit !f}' && N5=$((N5 + 1))
 done
 PERIOD=3; [ "$N5" -ge 2 ] && PERIOD=5; [ "$N5" -ge 3 ] && PERIOD=8
-ssh_router "touch $CONF; sed -i '/^BAND=/d; /^PEERS=/d; /^MAX_PEERS=/d; /^PERIODICITY_MS=/d' $CONF
-  printf 'BAND=both\nPEERS=\"%s\"\nMAX_PEERS=%s\nPERIODICITY_MS=%s\n' '$CHOSEN' '$N_ANCHORS' '$PERIOD' >> $CONF"
+# 2.4 GHz records are ~1 KB, so those anchors always run at 3 ms (~250/s)
+ssh_router "touch $CONF; sed -i '/^BAND=/d; /^PEERS=/d; /^MAX_PEERS=/d; /^PERIODICITY_MS=/d; /^PERIODICITY_MS_24=/d' $CONF
+  printf 'BAND=both\nPEERS=\"%s\"\nMAX_PEERS=%s\nPERIODICITY_MS=%s\nPERIODICITY_MS_24=3\n' '$CHOSEN' '$N_ANCHORS' '$PERIOD' >> $CONF"
 if [ "$CHOSEN" != "$SAVED" ] && [ -n "$SAVED" ]; then
   # a running daemon keeps its old settings; the map isn't running yet
   ssh_router 'sh /etc/crontabs/patches/cfr_capture_daemon.sh --stop' >/dev/null 2>&1 || true

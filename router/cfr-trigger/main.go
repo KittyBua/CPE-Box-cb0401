@@ -92,7 +92,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"syscall"
+	"time"
 )
 
 // --- netlink / genetlink wire format -----------------------------------
@@ -362,7 +364,15 @@ func main() {
 	param := flag.Uint("param", 0, "radio-parameter mode: send SET_WIFI_CONFIGURATION with GENERIC_COMMAND=<this id> and GENERIC_VALUE=-value to -iface (a radio netdev such as wifi1) instead of a CFR peer command - the same message cfg80211tool builds for its set-params, for ids its table no longer lists (0x1194 = the CFR global periodic timer, see package doc)")
 	value := flag.Uint("value", 0, "value for -param")
 	flag.BoolVar(&debug, "debug", false, "print every raw netlink reply message received")
+	poke := flag.String("poke", "", "traffic mode: send tiny UDP datagrams to these comma-separated IPs (port 9, discard) so that each one answers with an 802.11 ACK the radio can capture (RCC ctrl-frame filter); no CFR command is sent")
+	rate := flag.Uint("rate", 200, "for -poke: datagrams per second per address")
+	seconds := flag.Uint("seconds", 0, "for -poke: stop after this many seconds (0 = run until killed)")
 	flag.Parse()
+
+	if *poke != "" {
+		pokeLoop(strings.Split(*poke, ","), *rate, *seconds)
+		return
+	}
 
 	rawSet := false
 	flag.Visit(func(f *flag.Flag) {
@@ -524,4 +534,44 @@ func setRadioParam(iface string, wiphy int, param, value uint32) {
 		os.Exit(1)
 	}
 	fmt.Println("driver reply: ack (no error)")
+}
+
+// pokeLoop sends a 1-byte UDP datagram to every address in turn, rate
+// times a second each. Every unicast frame the AP sends makes the client
+// reply with an 802.11 ACK regardless of what the datagram is (port 9 is
+// "discard", so nothing else happens), which is what the RCC capture's
+// control-frame filter records: the client's channel, at a rate we choose,
+// without the periodic-capture mode that RCC excludes.
+func pokeLoop(addrs []string, rate, seconds uint) {
+	var conns []*net.UDPConn
+	for _, a := range addrs {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		c, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP(a), Port: 9})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "poke %s: %v\n", a, err)
+			continue
+		}
+		conns = append(conns, c)
+	}
+	if len(conns) == 0 || rate == 0 {
+		return
+	}
+	period := time.Second / time.Duration(rate*uint(len(conns)))
+	end := time.Time{}
+	if seconds > 0 {
+		end = time.Now().Add(time.Duration(seconds) * time.Second)
+	}
+	t := time.NewTicker(period)
+	defer t.Stop()
+	i := 0
+	for now := range t.C {
+		if !end.IsZero() && now.After(end) {
+			return
+		}
+		conns[i%len(conns)].Write([]byte{0})
+		i++
+	}
 }

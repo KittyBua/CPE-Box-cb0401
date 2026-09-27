@@ -136,7 +136,7 @@ func (a *analyzer) ingest(files []dumpFile, rotation time.Duration) (records int
 		recs := splitRecords(f.data)
 		for k, rec := range recs {
 			h, lay, ok := toneCSI(rec)
-			if !ok {
+			if !ok || rec.mac == "00:00:00:00:00:00" {
 				continue
 			}
 			chains := lay.chains

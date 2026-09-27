@@ -98,6 +98,7 @@ NO_CONSUMER_SECONDS=60
 # host tops out around 4 MB/s (~490 records/s at 8.4 KB each on 5 GHz;
 # 2.4 GHz records are ~1 KB).
 PERIODICITY_MS=20
+PERIODICITY_MS_24="" # 2.4 GHz peers: their records are 8x smaller (1 KB), so they can go faster; empty = same as PERIODICITY_MS
 # Movement is seen along each link's path, so several stationary, awake
 # devices in different directions cover more of the home (sensing.sh
 # --links changes it; the firmware has an unknown cap on periodic peers -
@@ -201,12 +202,15 @@ reconcile() {
         # non-HT duplicate on all four 20 MHz subchannels, 4 x 52 tones in a
         # record of the same size (measured 2026-09-27); on 2.4 GHz 0.
         # <type> 0: from ACKs of QoS nulls (type 1 adds per-chain phases).
-        bw=0
-        case "$(iwconfig "$vap" 2>/dev/null | sed -n 's/.*Frequency:\([0-9]\).*/\1/p')" in 5) bw=$BW5 ;; esac
-        if wlanconfig "$vap" cfr start "$mac" "$bw" "$PERIODICITY_MS" 0 >>"$LOG" 2>&1; then
-            log "started periodic capture every ${PERIODICITY_MS} ms (bw $bw) for $mac on $vap"
-        elif [ "$bw" != 0 ] && wlanconfig "$vap" cfr start "$mac" 0 "$PERIODICITY_MS" 0 >>"$LOG" 2>&1; then
-            log "started periodic capture every ${PERIODICITY_MS} ms (20 MHz fallback) for $mac on $vap"
+        bw=0; ms=$PERIODICITY_MS
+        case "$(iwconfig "$vap" 2>/dev/null | sed -n 's/.*Frequency:\([0-9]\).*/\1/p')" in
+        5) bw=$BW5 ;;
+        2) [ -n "$PERIODICITY_MS_24" ] && ms=$PERIODICITY_MS_24 ;;
+        esac
+        if wlanconfig "$vap" cfr start "$mac" "$bw" "$ms" 0 >>"$LOG" 2>&1; then
+            log "started periodic capture every ${ms} ms (bw $bw) for $mac on $vap"
+        elif [ "$bw" != 0 ] && wlanconfig "$vap" cfr start "$mac" 0 "$ms" 0 >>"$LOG" 2>&1; then
+            log "started periodic capture every ${ms} ms (20 MHz fallback) for $mac on $vap"
         else
             log "failed to start periodic capture for $mac on $vap"
         fi
