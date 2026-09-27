@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -206,6 +207,12 @@ const atPort = "/dev/ttyUSB2"
 
 var atCommandQuoteRe = regexp.MustCompile("'")
 
+// atMutex serializes AT queries so two concurrent /api/* handlers (e.g.
+// the periodic /api/status alongside /api/cellular-info) never step on
+// each other by both writing to /dev/ttyUSB2 or both reading the shared
+// /tmp/at_resp.txt at the same time - that would garble both replies.
+var atMutex sync.Mutex
+
 // atQuery sends a list of AT commands SEQUENTIALLY within one SSH session.
 //
 // This mirrors a fair amount of trial and error against the real modem:
@@ -214,6 +221,8 @@ var atCommandQuoteRe = regexp.MustCompile("'")
 // kills stray readers, drains the port, and syncs with a bare AT ping
 // before sending the real command(s).
 func atQuery(commands []string, wait time.Duration) (string, error) {
+	atMutex.Lock()
+	defer atMutex.Unlock()
 	waitSec := wait.Seconds()
 	parts := []string{
 		fmt.Sprintf(`for p in $(ps w | grep '[c]at %s' | awk '{print $1}'); do kill -9 $p 2>/dev/null; done`, atPort),
@@ -288,6 +297,65 @@ func getModemConfig() (map[string]string, error) {
 		time.Sleep(time.Duration(1500+attempt*1000) * time.Millisecond)
 	}
 	return cfg, nil
+}
+
+var (
+	qspnOperatorRe = regexp.MustCompile(`\+QSPN:\s*"([^"]*)"`)
+	qcaBandRe      = regexp.MustCompile(`\+QCAINFO:\s*"(PCC|SCC)"[^"]*"(LTE|NR5G)\s+BAND\s+(\d+)"`)
+)
+
+// getCellularInfo returns the live serving-cell info the stock web UI
+// shows too: current operator name, network type (LTE / 5G NSA / 5G SA),
+// and the aggregated bands actually in use right now (as opposed to what
+// getModemConfig returns, which is what the modem is *configured* to
+// consider, not what it's currently attached on).
+func getCellularInfo() (map[string]any, error) {
+	raw, err := atQuery([]string{
+		`AT+QSPN`,
+		`AT+QCAINFO`,
+	}, 1500*time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+
+	operator := ""
+	if m := qspnOperatorRe.FindStringSubmatch(raw); m != nil {
+		operator = m[1]
+	}
+
+	var bands []string
+	seen := map[string]bool{}
+	hasLTE, hasNR := false, false
+	for _, m := range qcaBandRe.FindAllStringSubmatch(raw, -1) {
+		prefix := "B"
+		if m[2] == "NR5G" {
+			prefix = "n"
+			hasNR = true
+		} else {
+			hasLTE = true
+		}
+		key := prefix + m[3]
+		if !seen[key] {
+			seen[key] = true
+			bands = append(bands, key)
+		}
+	}
+
+	networkType := ""
+	switch {
+	case hasNR && hasLTE:
+		networkType = "5G NSA"
+	case hasNR:
+		networkType = "5G SA"
+	case hasLTE:
+		networkType = "LTE"
+	}
+
+	return map[string]any{
+		"operator":     operator,
+		"network_type": networkType,
+		"bands":        strings.Join(bands, "+"),
+	}, nil
 }
 
 // setNr5gMode sets AT+QNWPREFCFG="nr5g_disable_mode":

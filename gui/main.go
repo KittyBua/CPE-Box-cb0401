@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-const appVersion = "0.3.1"
+const appVersion = "0.3.2"
 
 //go:embed templates/index.html
 var templatesFS embed.FS
@@ -249,6 +249,15 @@ func handleDataUsage(w http.ResponseWriter, r *http.Request) {
 	ok(w, data)
 }
 
+func handleCellularInfo(w http.ResponseWriter, r *http.Request) {
+	data, err := getCellularInfo()
+	if err != nil {
+		errResp(w, err)
+		return
+	}
+	ok(w, data)
+}
+
 func handleRaw(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Cmd string `json:"cmd"`
@@ -363,11 +372,21 @@ func main() {
 	mux.HandleFunc("/api/device-monitor/whitelist", requireMethod(http.MethodPost, handleDeviceMonitorWhitelist))
 	mux.HandleFunc("/api/notify-config", requireMethod(http.MethodPost, handleNotifyConfig))
 	mux.HandleFunc("/api/data-usage", handleDataUsage)
+	mux.HandleFunc("/api/cellular-info", handleCellularInfo)
 	mux.HandleFunc("/api/raw", requireMethod(http.MethodPost, handleRaw))
 
-	addr := "127.0.0.1:5757"
+	// Default binds to loopback only — the GUI has no auth of its own, so
+	// exposing it on the LAN is opt-in via GUI_BIND (e.g. "0.0.0.0:5757"
+	// to make it reachable from other devices on the network, or
+	// "192.168.1.10:5757" to bind to one specific interface).
+	addr := getenv("GUI_BIND", "127.0.0.1:5757")
 	fmt.Println("============================================================")
 	fmt.Printf("XIAOMI 5G CPE PRO CB0401V1/V2 Tune + Control: http://%s\n", addr)
+	if !strings.HasPrefix(addr, "127.0.0.1") && !strings.HasPrefix(addr, "localhost") {
+		fmt.Println("WARNING: bound to a non-loopback address — this GUI has no")
+		fmt.Println("         authentication. Anyone who can reach this port has")
+		fmt.Println("         full control of the router.")
+	}
 	fmt.Println("============================================================")
 	log.Fatal(http.ListenAndServe(addr, mux))
 }
