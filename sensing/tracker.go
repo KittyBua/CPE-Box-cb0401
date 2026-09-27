@@ -39,9 +39,9 @@ const (
 	powerSigma   = 0.12 // spread of the observed vs predicted share of moving power
 	bodyMinShare = 0.25 // a cluster needs this share of the weight to count as a body
 	cleanThr     = 6.0  // dB: links with a threshold up to this are quiet enough to raise an alarm
-	presenceOn   = 2500 * time.Millisecond
+	presenceOn   = 1000 * time.Millisecond
 	presenceOff  = 5 * time.Second
-	glideTime    = 2.5 // s, how slowly a shown ball follows the estimate
+	glideTime    = 1.2 // s, how slowly a shown ball follows the estimate
 	secondAfter  = 3 * time.Second
 	maxShown     = 2
 	bodyCell     = 0.4 // m, clustering grid

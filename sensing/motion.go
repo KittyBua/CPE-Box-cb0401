@@ -31,13 +31,12 @@ import (
 
 const (
 	metricWindow   = time.Second
-	baselineWindow = 10 * time.Minute
+	baselineWindow = 30 * time.Minute
 	tickEvery      = 250 * time.Millisecond
 	staleAfter     = 3 * time.Second
 	minFrames      = 10 // per metric window
 	dopplerWindow  = 500 * time.Millisecond
-	warmupSamples  = 40  // ~10 s of ticks before a link reports a score
-	noiseSamples   = 480 // ~2 min before a link's threshold adapts to its noise
+	warmupSamples  = 40 // ~10 s of ticks before a link reports a score
 )
 
 type link struct {
@@ -250,17 +249,18 @@ func (a *analyzer) tick(now time.Time) []LinkState {
 			l.hist = append(l.hist, l.metric)
 			l.histT = append(l.histT, now)
 			if len(l.hist) >= warmupSamples {
-				l.baseline = percentile(l.hist, 0.2)
+				// The quiet floor: the quietest seconds of the last half hour.
+				// People are at home all the time, so "normal" must not mean
+				// "typical" - with two people about, the 20th percentile of
+				// ten minutes sat 3-5 dB above the floor and the old
+				// 75th-percentile noise band made thresholds of 15-30 dB;
+				// two people in the TV room then showed nothing (measured
+				// 2026-09-27). What is left of noise is the tick-to-tick
+				// jitter, which people don't change: under 1 dB here.
+				l.baseline = percentile(l.hist, 0.05)
 				if l.baseline > 0 && l.metric > 0 {
 					raw = math.Max(0, dB(l.metric/l.baseline))
-					// Adapt the threshold to the link's noise only once there
-					// are ~2 minutes of history: someone walking during the
-					// first minute otherwise reads as "this link is noisy".
-					l.thr = a.threshold
-					if len(l.hist) >= noiseSamples {
-						band := dB(percentile(l.hist, 0.75) / l.baseline)
-						l.thr = math.Max(a.threshold, 2*band)
-					}
+					l.thr = math.Max(a.threshold, 2.5*jitterDB(l.hist))
 				}
 			}
 		}
@@ -288,6 +288,25 @@ func (a *analyzer) tick(now time.Time) []LinkState {
 }
 
 func dB(x float64) float64 { return 10 * math.Log10(x) }
+
+// jitterDB: the link's own tick-to-tick noise, in dB - 1.48 x the median
+// absolute step between consecutive metric values (a robust standard
+// deviation that ignores the big steps movement makes).
+func jitterDB(hist []float64) float64 {
+	if len(hist) < 3 {
+		return 0
+	}
+	d := make([]float64, 0, len(hist)-1)
+	for i := 1; i < len(hist); i++ {
+		if hist[i] > 0 && hist[i-1] > 0 {
+			d = append(d, math.Abs(dB(hist[i]/hist[i-1])))
+		}
+	}
+	if len(d) == 0 {
+		return 0
+	}
+	return 1.48 * percentile(d, 0.5)
+}
 
 // newest: the frames within d of the latest one.
 func newest(frames []csiFrame, d time.Duration) []csiFrame {
