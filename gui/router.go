@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -50,6 +51,16 @@ func sshOpts() []string {
 		"-o", "HostKeyAlgorithms=+ssh-rsa",
 		"-o", "PubkeyAcceptedAlgorithms=+ssh-rsa",
 		"-o", "ConnectTimeout=5",
+		// Multiplex over one TCP connection: the router's dropbear is
+		// happy to open a new SSH session on an existing connection but
+		// gets angry ("kex_exchange_identification: Connection reset by
+		// peer") when several handlers on this side each try to open a
+		// fresh connection at the same time. ControlMaster=auto keeps
+		// one connection warm for 60s so subsequent calls piggy-back on
+		// it instead of racing the key exchange.
+		"-o", "ControlMaster=auto",
+		"-o", "ControlPath=/tmp/cb0401_ssh_%C",
+		"-o", "ControlPersist=60",
 	}
 }
 
@@ -299,62 +310,110 @@ func getModemConfig() (map[string]string, error) {
 	return cfg, nil
 }
 
-var (
-	qspnOperatorRe = regexp.MustCompile(`\+QSPN:\s*"([^"]*)"`)
-	qcaBandRe      = regexp.MustCompile(`\+QCAINFO:\s*"(PCC|SCC)"[^"]*"(LTE|NR5G)\s+BAND\s+(\d+)"`)
-)
+var qcaBandRe = regexp.MustCompile(`\+QCAINFO:\s*"(?:PCC|SCC)"[^"]*"(LTE|NR5G)\s+BAND\s+(\d+)"`)
 
-// getCellularInfo returns the live serving-cell info the stock web UI
-// shows too: current operator name, network type (LTE / 5G NSA / 5G SA),
-// and the aggregated bands actually in use right now (as opposed to what
-// getModemConfig returns, which is what the modem is *configured* to
-// consider, not what it's currently attached on).
+// aggregatedBands runs AT+QCAINFO and returns the currently attached
+// bands as "B3+B8+n1+n78".  Best-effort — returns "" on any hiccup so
+// the caller can fall back to the primary band from ubus.
+func aggregatedBands() string {
+	raw, err := atQuery([]string{`AT+QCAINFO`}, 2*time.Second)
+	if err != nil {
+		return ""
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range qcaBandRe.FindAllStringSubmatch(raw, -1) {
+		prefix := "B"
+		if m[1] == "NR5G" {
+			prefix = "n"
+		}
+		key := prefix + m[2]
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, key)
+		}
+	}
+	return strings.Join(out, "+")
+}
+
+// getCellularInfo pulls the live serving-cell info straight from
+// `ubus call mobile dump_status` — the same source the stock web UI
+// uses.  No AT commands for the base info; ubus returns JSON in one
+// fast call and it's already what the router computed for its own
+// UI, so the values match what you see at router.miwifi.com.  The
+// aggregated band list (which ubus doesn't expose) is fetched via
+// one AT+QCAINFO on top, best-effort — if it fails we fall back to
+// the ubus primary band.
 func getCellularInfo() (map[string]any, error) {
-	raw, err := atQuery([]string{
-		`AT+QSPN`,
-		`AT+QCAINFO`,
-	}, 1500*time.Millisecond)
+	raw, err := run("ubus call mobile dump_status 2>/dev/null", 10*time.Second)
 	if err != nil {
 		return nil, err
 	}
-
-	operator := ""
-	if m := qspnOperatorRe.FindStringSubmatch(raw); m != nil {
-		operator = m[1]
+	var parsed struct {
+		SIM struct {
+			Status      int    `json:"status"`
+			PinRemains  int    `json:"pin_remains"`
+			PukRemains  int    `json:"puk_remains"`
+			Lock        int    `json:"lock"`
+			ICCID       string `json:"iccid"`
+			IMSI        string `json:"imsi"`
+			Number      string `json:"number"`
+			Country     string `json:"country"`
+		} `json:"sim"`
+		Status struct {
+			Registration int         `json:"registration"`
+			ISP          string      `json:"isp"`
+			APN          string      `json:"apn"`
+			RAT          string      `json:"rat"`
+			CellBand     string      `json:"cell_band"`
+			Cell5GBand   string      `json:"cell_band_5g"`
+			Level        int         `json:"level"`
+			RSRP         json.Number `json:"rsrp"`
+			RSRQ         json.Number `json:"rsrq"`
+			SNR          json.Number `json:"snr"`
+			RSSI         json.Number `json:"rssi"`
+			Roam         int         `json:"roam"`
+		} `json:"status"`
 	}
-
-	var bands []string
-	seen := map[string]bool{}
-	hasLTE, hasNR := false, false
-	for _, m := range qcaBandRe.FindAllStringSubmatch(raw, -1) {
-		prefix := "B"
-		if m[2] == "NR5G" {
-			prefix = "n"
-			hasNR = true
-		} else {
-			hasLTE = true
-		}
-		key := prefix + m[3]
-		if !seen[key] {
-			seen[key] = true
-			bands = append(bands, key)
-		}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return nil, routerErrf("Could not parse mobile status: %v", err)
 	}
-
-	networkType := ""
-	switch {
-	case hasNR && hasLTE:
-		networkType = "5G NSA"
-	case hasNR:
-		networkType = "5G SA"
-	case hasLTE:
-		networkType = "LTE"
+	simStatuses := map[int]string{
+		0: "Absent", 1: "Ready", 2: "PIN required",
+		3: "PUK required", 4: "Error",
 	}
-
+	simStatus := simStatuses[parsed.SIM.Status]
+	if simStatus == "" {
+		simStatus = fmt.Sprintf("code %d", parsed.SIM.Status)
+	}
+	s := parsed.Status
+	// Aggregated CA bands (e.g. "B3+B8+n1+n78") if the modem replies,
+	// otherwise stick with the human-readable primary band from ubus.
+	band := s.CellBand
+	if agg := aggregatedBands(); agg != "" {
+		band = agg
+	}
 	return map[string]any{
-		"operator":     operator,
-		"network_type": networkType,
-		"bands":        strings.Join(bands, "+"),
+		"operator":     s.ISP,
+		"network_type": s.RAT,
+		"band":         band,
+		"band_primary": s.CellBand,
+		"band_5g":      s.Cell5GBand,
+		"apn":          s.APN,
+		"level":        s.Level,
+		"rsrp":         s.RSRP.String(),
+		"rsrq":         s.RSRQ.String(),
+		"snr":          s.SNR.String(),
+		"rssi":         s.RSSI.String(),
+		"roaming":      s.Roam != 0,
+		"registered":   s.Registration == 1,
+		"sim_status":   simStatus,
+		"sim_locked":   parsed.SIM.Lock == 1,
+		"sim_pin_left": parsed.SIM.PinRemains,
+		"sim_puk_left": parsed.SIM.PukRemains,
+		"sim_number":   parsed.SIM.Number,
+		"sim_iccid":    parsed.SIM.ICCID,
+		"sim_country":  parsed.SIM.Country,
 	}, nil
 }
 

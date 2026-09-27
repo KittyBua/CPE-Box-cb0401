@@ -94,9 +94,13 @@
     <div class="row"><span class="k">Memory free</span><span class="v" id="sysMem">—</span></div>
     <div class="row"><span class="k">SoC temperature</span><span class="v" id="sysTemp">—</span></div>
     <div class="row"><span class="k">Uptime</span><span class="v" id="sysUptime">—</span></div>
+    <div class="row"><span class="k">SIM</span><span class="v" id="sysSim">—</span></div>
+    <div class="row"><span class="k">Phone number</span><span class="v" id="sysSimNumber">—</span></div>
     <div class="row"><span class="k">Operator</span><span class="v" id="sysOperator">—</span></div>
     <div class="row"><span class="k">Network</span><span class="v" id="sysNetwork">—</span></div>
-    <div class="row"><span class="k">Active bands</span><span class="v" id="sysBands">—</span></div>
+    <div class="row"><span class="k">Band</span><span class="v" id="sysBand">—</span></div>
+    <div class="row"><span class="k">Signal</span><span class="v" id="sysSignal">—</span></div>
+    <div class="row"><span class="k">APN</span><span class="v" id="sysApn">—</span></div>
     <div class="row"><span class="k">Download</span><span class="v" id="duRx">—</span></div>
     <div class="row"><span class="k">Upload</span><span class="v" id="duTx">—</span></div>
     <div class="row"><span class="k">Total</span><span class="v" id="duTotal">—</span></div>
@@ -610,9 +614,32 @@ async function loadDataUsage() {
 async function loadCellularInfo() {
   try {
     const d = await api('/api/cellular-info');
-    document.getElementById('sysOperator').textContent = d.operator || '—';
+
+    // SIM: status + PIN protection state + attempts left (if lock is enabled)
+    let sim = d.sim_status || '—';
+    if (d.sim_locked) {
+      sim += ' · PIN enabled';
+      if (d.sim_pin_left != null && d.sim_pin_left !== 3) sim += ' (' + d.sim_pin_left + ' attempts left)';
+    } else if (d.sim_status === 'Ready') {
+      sim += ' · PIN disabled';
+    }
+    document.getElementById('sysSim').textContent = sim;
+    document.getElementById('sysSimNumber').textContent = d.sim_number || '—';
+
+    let op = d.operator || '—';
+    if (d.roaming) op += ' (roaming)';
+    if (!d.registered && d.operator) op += ' (not registered)';
+    document.getElementById('sysOperator').textContent = op;
     document.getElementById('sysNetwork').textContent = d.network_type || '—';
-    document.getElementById('sysBands').textContent = d.bands || '—';
+    document.getElementById('sysBand').textContent = d.band || '—';
+
+    const levelLabels = {5: 'Excellent', 4: 'Strong', 3: 'Mid', 2: 'Weak', 1: 'Poor'};
+    const label = levelLabels[d.level] || '';
+    const bars = d.level != null ? '▂▄▆█'.slice(0, d.level) + '·'.repeat(Math.max(0, 4 - d.level)) : '';
+    const rsrp = d.rsrp && d.rsrp !== '0' ? d.rsrp + ' dBm' : '';
+    document.getElementById('sysSignal').textContent = [label, bars, rsrp].filter(Boolean).join(' · ') || '—';
+
+    document.getElementById('sysApn').textContent = d.apn || '—';
   } catch (e) {
     // silent — leave last known value
   }
