@@ -5,7 +5,7 @@
 # CGO_ENABLED=0 makes this a static, syscall-only binary.
 #
 # setup.sh/.ps1 normally do this on the fly whenever Go is available; this
-# script exists for the same reason gui/build.sh does - so someone without
+# script exists for the same reason build.sh at the repo root does - so someone without
 # Go installed can build it on another machine and drop the result in
 # (setup.sh/.ps1 fall back to dist/sms-reader-arm here if they can't build
 # it themselves).

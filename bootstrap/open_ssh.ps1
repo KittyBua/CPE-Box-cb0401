@@ -66,7 +66,7 @@ if (-not $PubKeyFile) {
     $PubKeyFile = Join-Path $PSScriptRoot '..\gui\router_key.pub'
 }
 if (-not (Test-Path $PubKeyFile)) {
-    Die "SSH public key not found at $PubKeyFile. Generate one first: ssh-keygen -t ed25519 -f router_key -N '""' -C cb0401-tune-control-gui"
+    Die "SSH public key not found at $PubKeyFile. Generate one first: ssh-keygen -t ed25519 -f router_key -N '""' -C cpe-box-gui"
 }
 $pubKey = (Get-Content $PubKeyFile -Raw).Trim()
 

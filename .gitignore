@@ -4,15 +4,16 @@ gui/router_key.pub
 gui/.env
 
 # Go build output
-gui/cb0401-tune-control
-gui/cb0401-tune-control.exe
+gui/cpe-box
+gui/cpe-box.exe
 gui/gui
 gui/dist/
 router/sms-reader/dist/
 router/sms-reader-arm
-router/cfr-trigger/dist/
-router/cfr-trigger-arm
-sensing/sensing
+
+# Runtime state — fetch.sh writes the currently-downloaded release tag here
+gui/.release
+router/sms-reader/dist/
 # motion map floor plan (your own, local)
 /data/
 

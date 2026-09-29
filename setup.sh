@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# setup.sh — one-shot, fully self-contained setup for the CB0401 Tune + Control,
+# setup.sh — one-shot, fully self-contained setup for the CPE Box,
 # for macOS and Linux. No Python, no third-party exploit tool - just bash,
 # an SSH client, and (optionally) Go if you want to build the GUI from
 # source instead of using a prebuilt binary.
@@ -23,7 +23,8 @@
 #   5. Runs router/cleanup.sh on the router to remove telemetry/dead cron
 #      jobs (safe by default — see cleanup.sh's own flags for optional
 #      extras).
-#   6. Builds the GUI at gui/, uses it to unlock every band the modem
+#   6. Gets the GUI (built from source with Go, otherwise the latest GitHub
+#      release - see gui/fetch.sh), uses it to unlock every band the modem
 #      supports and install the 5G mode hook (first run only - see
 #      provisionRouter in gui/router.go), then launches it.
 #
@@ -60,7 +61,7 @@ scp_to_router() {
   fi
 }
 
-say "CB0401 Tune + Control setup"
+say "CPE Box setup"
 echo "Router IP:      $ROUTER_IP"
 echo "GUI key path:   $KEY_PATH"
 
@@ -76,13 +77,21 @@ if ! command -v sshpass >/dev/null 2>&1; then
     brew install sshpass 2>/dev/null || brew install hudochenkov/sshpass/sshpass || true
   elif command -v apt-get >/dev/null 2>&1; then
     sudo apt-get update && sudo apt-get install -y sshpass || true
+  elif command -v dnf >/dev/null 2>&1; then
+    sudo dnf install -y sshpass || true
+  elif command -v pacman >/dev/null 2>&1; then
+    sudo pacman -S --noconfirm sshpass || true
+  elif command -v zypper >/dev/null 2>&1; then
+    sudo zypper install -y sshpass || true
+  elif command -v apk >/dev/null 2>&1; then
+    sudo apk add --no-cache sshpass || true
   fi
   command -v sshpass >/dev/null 2>&1 || echo "Could not install sshpass automatically — the GUI will still work, it just won't be able to self-heal a lost SSH key. Install sshpass manually to enable that."
 fi
 
 mkdir -p "$(dirname "$KEY_PATH")"
 if [ ! -f "$KEY_PATH" ]; then
-  ssh-keygen -t ed25519 -f "$KEY_PATH" -N "" -C "cb0401-tune-control-gui" -q
+  ssh-keygen -t ed25519 -f "$KEY_PATH" -N "" -C "cpe-box-gui" -q
 fi
 
 # --- 2. Open SSH on the router -----------------------------------------------
@@ -160,7 +169,7 @@ if {
   cat <<'KEEP_KEY_REMOTE'
 cat > /etc/crontabs/patches/keep_ssh_key.sh <<'KEEP_KEY_EOF'
 #!/bin/sh
-# Re-adds cb0401-tune-control's SSH key after a reboot wiped the ramfs /etc.
+# Re-adds cpe-box's SSH key after a reboot wiped the ramfs /etc.
 K=/etc/crontabs/patches/toolkit_key.pub
 [ -s "$K" ] || exit 0
 mkdir -p /etc/dropbear
@@ -170,12 +179,10 @@ chmod 600 /etc/dropbear/authorized_keys
 KEEP_KEY_EOF
 chmod +x /etc/crontabs/patches/keep_ssh_key.sh
 sed -i '/keep_ssh_key.sh/d' /etc/crontabs/root
-echo '* * * * * sh /etc/crontabs/patches/keep_ssh_key.sh >/dev/null 2>&1' >> /etc/crontabs/root
-/etc/init.d/cron restart >/dev/null 2>&1 || true
 sh /etc/crontabs/patches/keep_ssh_key.sh
 KEEP_KEY_REMOTE
 } | ssh "${SSH_OPTS[@]}" -i "$KEY_PATH" -o BatchMode=yes "root@$ROUTER_IP" sh; then
-  echo "The key is now restored automatically after router reboots."
+  echo "The key will be restored automatically after router reboots (by boot.sh, set up below)."
 else
   echo "NOTE: couldn't install the key-restore job; after a router reboot, re-run ./start.sh."
 fi
@@ -229,9 +236,9 @@ else
     echo "Reusing existing topic from $ENV_FILE"
   else
     if command -v openssl >/dev/null 2>&1; then
-      NTFY_TOPIC="cb0401v2-$(openssl rand -hex 8)"
+      NTFY_TOPIC="cpebox-$(openssl rand -hex 8)"
     else
-      NTFY_TOPIC="cb0401v2-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+      NTFY_TOPIC="cpebox-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
     fi
   fi
   echo "ntfy.sh topic: $NTFY_TOPIC"
@@ -246,103 +253,57 @@ NTFY_TOPIC=$NTFY_TOPIC
 TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN
 TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID
 EOF
-cp "$REPO_DIR/router/notify_common.sh" "$TMP_DIR/notify_common.sh"
-cp "$REPO_DIR/router/device_monitor.sh" "$TMP_DIR/device_monitor.sh"
-cp "$REPO_DIR/router/dhcp_notify.sh" "$TMP_DIR/dhcp_notify.sh"
-cp "$REPO_DIR/router/command_watcher.sh" "$TMP_DIR/command_watcher.sh"
-cp "$REPO_DIR/router/sms_notify.sh" "$TMP_DIR/sms_notify.sh"
-cp "$REPO_DIR/router/json_unescape.lua" "$TMP_DIR/json_unescape.lua"
-cp "$REPO_DIR/router/cleanup.sh" "$TMP_DIR/cleanup.sh"
+for f in install.sh cleanup.sh notify_common.sh device_monitor.sh dhcp_notify.sh command_watcher.sh \
+    sms_notify.sh json_unescape.lua boot.sh sms_msg_hook.lua; do
+  cp "$REPO_DIR/router/$f" "$TMP_DIR/$f"
+done
 
-# sms-reader needs to run ON the router (ARM), so this always cross-builds
-# it fresh when Go is available - CGO_ENABLED=0 makes it a static,
-# syscall-only binary, so no ARM cross-compiler toolchain is needed, just
-# the same Go installation setup.sh already needs to build the GUI. If Go
-# isn't installed, fall back to a prebuilt one (see
-# router/sms-reader/build.sh) if someone's dropped one in; otherwise skip
-# SMS forwarding entirely rather than fail the rest of setup over it.
-SMS_READER_BIN=""
-if command -v go >/dev/null 2>&1; then
-  if (cd "$REPO_DIR/router/sms-reader" && CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -ldflags="-s -w" -o "$TMP_DIR/sms-reader" .); then
-    SMS_READER_BIN="$TMP_DIR/sms-reader"
-  fi
-elif [ -x "$REPO_DIR/router/sms-reader/dist/sms-reader-arm" ]; then
-  cp "$REPO_DIR/router/sms-reader/dist/sms-reader-arm" "$TMP_DIR/sms-reader"
-  SMS_READER_BIN="$TMP_DIR/sms-reader"
-fi
-if [ -z "$SMS_READER_BIN" ]; then
-  echo "NOTE: couldn't build or find sms-reader (needs Go, or a prebuilt"
-  echo "      router/sms-reader/dist/sms-reader-arm - see router/sms-reader/build.sh)."
-  echo "      Skipping SMS forwarding; everything else is unaffected."
+# sms-reader is the ARMv7 SQLite reader that runs ON the router. It ships
+# embedded inside every prebuilt cpe-box binary (see gui/embed_smsreader.go),
+# so ensure_gui_bin below makes it available; fetch_sms_reader dumps it out.
+# When Go is installed it cross-builds a fresh one instead, so anyone
+# hacking on router/sms-reader/ sees their edits without re-running the
+# whole release pipeline. On the very rare setup where none of that works,
+# SMS forwarding is skipped rather than the whole setup failing.
+. "$REPO_DIR/gui/fetch.sh"
+ensure_gui_bin || die "couldn't build or download CPE Box"
+if ! fetch_sms_reader "$TMP_DIR"; then
+  echo "NOTE: couldn't extract or build sms-reader (needs Go, or an already-fetched"
+  echo "      cpe-box binary). Skipping SMS forwarding; everything else is unaffected."
 fi
 
-SCP_FILES=(
-  "$TMP_DIR"/notify.conf "$TMP_DIR"/notify_common.sh "$TMP_DIR"/device_monitor.sh
-  "$TMP_DIR"/dhcp_notify.sh "$TMP_DIR"/command_watcher.sh "$TMP_DIR"/sms_notify.sh
-  "$TMP_DIR"/json_unescape.lua "$TMP_DIR"/cleanup.sh
-)
-[ -n "$SMS_READER_BIN" ] && SCP_FILES+=("$SMS_READER_BIN")
-scp_to_router "${SCP_FILES[@]}" "root@$ROUTER_IP:/tmp/" >/dev/null
+ssh "${SSH_OPTS[@]}" -i "$KEY_PATH" "root@$ROUTER_IP" 'rm -rf /tmp/cpebox && mkdir -p /tmp/cpebox'
+scp_to_router "$TMP_DIR"/* "root@$ROUTER_IP:/tmp/cpebox/" >/dev/null
 rm -rf "$TMP_DIR"
 
-# New-device alerts fire the instant dnsmasq grants a lease (dhcp_notify.sh,
-# wired as dnsmasq's own --dhcp-script hook below) instead of on a polling
-# timer - no delay, and nothing runs on the router between actual events.
-# device_monitor.sh is kept only for the one-shot baseline scan right after
-# install (so devices already connected before setup get seeded into
-# notified_macs.txt instead of alerting the moment the hook goes live) and
-# as a manual re-scan escape hatch; the old cron entry that used to poll it
-# every 3 minutes is removed if this is a re-run of an older install.
-ssh "${SSH_OPTS[@]}" -i "$KEY_PATH" "root@$ROUTER_IP" '
-  mkdir -p /etc/crontabs/patches
-  cp /tmp/notify.conf /etc/crontabs/patches/notify.conf
-  chmod 600 /etc/crontabs/patches/notify.conf
-  cp /tmp/notify_common.sh /etc/crontabs/patches/notify_common.sh
-  cp /tmp/device_monitor.sh /etc/crontabs/patches/device_monitor.sh
-  cp /tmp/dhcp_notify.sh /etc/crontabs/patches/dhcp_notify.sh
-  cp /tmp/command_watcher.sh /etc/crontabs/patches/command_watcher.sh
-  cp /tmp/sms_notify.sh /etc/crontabs/patches/sms_notify.sh
-  cp /tmp/json_unescape.lua /etc/crontabs/patches/json_unescape.lua
-  [ -f /tmp/sms-reader ] && cp /tmp/sms-reader /etc/crontabs/patches/sms-reader
-  rm -f /etc/crontabs/patches/ntfy_command_watcher.sh
-  chmod +x /etc/crontabs/patches/notify_common.sh /etc/crontabs/patches/device_monitor.sh /etc/crontabs/patches/dhcp_notify.sh /etc/crontabs/patches/command_watcher.sh /etc/crontabs/patches/sms_notify.sh
-  [ -f /etc/crontabs/patches/sms-reader ] && chmod +x /etc/crontabs/patches/sms-reader
-  touch /etc/crontabs/patches/known_macs.txt
-  sh /etc/crontabs/patches/device_monitor.sh
-  uci set dhcp.@dnsmasq[0].dhcpscript="/etc/crontabs/patches/dhcp_notify.sh"
-  uci commit dhcp
-  /etc/init.d/dnsmasq reload >/dev/null 2>&1 || /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
-  sed -i "/ntfy_command_watcher\.sh/d; /\/device_monitor\.sh/d; /command_watcher\.sh/d; /sms_notify\.sh/d" /etc/crontabs/root 2>/dev/null || true
-  echo "* * * * * sh /etc/crontabs/patches/command_watcher.sh --ensure >/dev/null 2>&1" >> /etc/crontabs/root
-  if [ -f /etc/crontabs/patches/sms-reader ]; then
-    echo "* * * * * sh /etc/crontabs/patches/sms_notify.sh --ensure >/dev/null 2>&1" >> /etc/crontabs/root
-  fi
-  /etc/init.d/cron restart >/dev/null 2>&1 || true
-  sh /etc/crontabs/patches/command_watcher.sh --restart
-  if [ -f /etc/crontabs/patches/sms-reader ]; then
-    # Seed the "already seen" SMS id from whatever is in the database
-    # right now, so setup does not forward old messages the moment the
-    # daemon starts (mirrors device_monitor.sh'"'"'s baseline scan above) -
-    # then start the daemon itself.
-    sh /etc/crontabs/patches/sms_notify.sh
-    sh /etc/crontabs/patches/sms_notify.sh --restart
-  fi
-'
-echo "New-device alerts wired to dnsmasq (instant, no polling); command listener and SMS forwarder started on the router."
+# --- 5. Router install + cleanup ---------------------------------------------
+# router/install.sh is the one place everything done ON the router lives
+# (shared with setup.ps1). It also runs cleanup.sh: telemetry, dead cron jobs
+# and the cloud/Mesh/TR-069/Mi Home services are switched off by default;
+# CLEANUP_FLAGS keeps a group you use (--keep-cloud / --keep-mesh /
+# --keep-tr069 / --keep-miot - see router/cleanup.sh).
+say "Installing on the router and cleaning it up"
+ssh "${SSH_OPTS[@]}" -i "$KEY_PATH" "root@$ROUTER_IP" "sh /tmp/cpebox/install.sh ${CLEANUP_FLAGS:-}"
+[ -z "${CLEANUP_FLAGS:-}" ] && echo "(Using the Mi WiFi/Mi Home app, Mesh satellites or carrier remote management? Re-run with e.g. CLEANUP_FLAGS='--keep-mesh'.)"
 
-# --- 5. Cleanup --------------------------------------------------------
-
-say "Cleaning up telemetry and dead cron jobs on the router"
-# CLEANUP_FLAGS lets you pre-choose the opt-in items (--disable-mesh /
-# --disable-messagingagent / --all) so re-running setup doesn't need a
-# manual follow-up SSH each time. Leave unset for the safe-only default.
-ssh "${SSH_OPTS[@]}" -i "$KEY_PATH" "root@$ROUTER_IP" "sh /tmp/cleanup.sh ${CLEANUP_FLAGS:-}"
-if [ -z "${CLEANUP_FLAGS:-}" ]; then
-  echo "(To also disable Xiaomi Mesh daemons or messagingagent, either set"
-  echo " CLEANUP_FLAGS='--disable-mesh'/'--disable-messagingagent'/'--all' and"
-  echo " re-run this script, or SSH in and run cleanup.sh with those flags"
-  echo " directly — see router/cleanup.sh for what each one actually does"
-  echo " before opting in. These now persist across reboots on their own.)"
+# Sanity check that install.sh's pieces actually landed. The stock firmware
+# owns /etc via ramfs, so a stray "Read-only file system" / "no space left
+# on device" mid-install used to fail silently and leave a half-configured
+# router (e.g. cron entry but no boot.sh, so nothing runs on next boot).
+say "Verifying the router side"
+MISSING="$(ssh "${SSH_OPTS[@]}" -i "$KEY_PATH" "root@$ROUTER_IP" '
+  D=/etc/crontabs/patches; missing=""
+  for f in boot.sh notify_common.sh command_watcher.sh dhcp_notify.sh notify.conf wifi_dfs_persist.sh; do
+    [ -f "$D/$f" ] || missing="$missing $f"
+  done
+  grep -q "$D/boot.sh" /etc/crontabs/root || missing="$missing (cron line)"
+  echo "$missing"
+' 2>/dev/null)"
+if [ -n "$MISSING" ]; then
+  echo "WARNING: some router-side pieces didn't install:$MISSING"
+  echo "         setup keeps going, but re-run setup.sh once - it's idempotent."
+else
+  echo "All router-side pieces are in place."
 fi
 
 # --- 6. GUI --------------------------------------------------------------
@@ -361,6 +322,9 @@ KEEP_GUI_BIND=""
 if [ -f "$ENV_FILE" ] && grep -q '^GUI_BIND=' "$ENV_FILE"; then
   KEEP_GUI_BIND="$(grep '^GUI_BIND=' "$ENV_FILE" | cut -d= -f2-)"
 fi
+# Anything else in .env (the panel's session key, GUI_HOSTNAME, ...) is kept.
+KEEP_OTHER=""
+[ -f "$ENV_FILE" ] && KEEP_OTHER="$(grep -vE '^(ROUTER_IP|ROUTER_ROOT_PASSWORD|NOTIFY_BACKEND|NTFY_TOPIC|TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID|GUI_BIND)=' "$ENV_FILE" | grep -v '^[[:space:]]*$' || true)"
 cat > "$ENV_FILE" <<EOF
 ROUTER_IP=$ROUTER_IP
 ROUTER_ROOT_PASSWORD=${KNOWN_PASSWORD:-root}
@@ -369,15 +333,14 @@ NTFY_TOPIC=$NTFY_TOPIC
 TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN
 TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID
 EOF
-[ -n "$KEEP_GUI_BIND" ] && echo "GUI_BIND=$KEEP_GUI_BIND" >> "$ENV_FILE"
+# Reachable from every device on the LAN by default (they log in with the
+# router root password); set GUI_BIND=127.0.0.1:7777 to keep it local.
+echo "GUI_BIND=${KEEP_GUI_BIND:-0.0.0.0:7777}" >> "$ENV_FILE"
+[ -n "$KEEP_OTHER" ] && echo "$KEEP_OTHER" >> "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
 say "Unlocking modem bands and installing the 5G mode hook"
-GUI_BIN="$REPO_DIR/gui/cb0401-tune-control"
-if command -v go >/dev/null 2>&1; then
-  (cd "$REPO_DIR/gui" && go build -o "$GUI_BIN" .) || die "building the GUI failed"
-fi
-[ -x "$GUI_BIN" ] || die "no GUI binary at $GUI_BIN (install Go, or copy a prebuilt one there - see gui/build.sh)"
+GUI_BIN="$REPO_DIR/gui/cpe-box"
 "$GUI_BIN" --provision || die "band unlock / 5G mode hook setup failed"
 
 say "Setup complete. Starting the GUI..."

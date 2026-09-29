@@ -272,7 +272,7 @@ poll_ntfy() {
     # loop's exit code, and we'd advance $STATE past commands we never
     # actually saw (permanently losing them, since we never re-fetch a
     # range once we've moved past it).
-    if curl -s -m 15 -o "$RESP" "https://ntfy.sh/$NTFY_TOPIC/json?since=$SINCE&poll=1"; then
+    if curl_url "https://ntfy.sh/$NTFY_TOPIC/json?since=$SINCE&poll=1" -s -m 15 -o "$RESP"; then
         # The trailing `echo` guarantees the last line ends in a newline:
         # `read` in dash/ash silently DROPS a final line that isn't
         # newline-terminated (its exit status signals EOF, so the loop body
@@ -319,7 +319,7 @@ poll_ntfy_stream() {
     [ -f "$STATE" ] || echo $(($(date +%s) - 300)) > "$STATE"
     SINCE=$(cat "$STATE")
 
-    curl -s -N -m 55 "https://ntfy.sh/$NTFY_TOPIC/json?since=$SINCE" | while IFS= read -r line; do
+    curl_url "https://ntfy.sh/$NTFY_TOPIC/json?since=$SINCE" -s -N -m 55 | while IFS= read -r line; do
         handle_ntfy_line "$line"
         t=$(echo "$line" | sed -n 's/.*"time":\([0-9]*\).*/\1/p')
         [ -n "$t" ] && echo $((t + 1)) > "$STATE"
@@ -336,8 +336,8 @@ poll_telegram() {
     WAIT="${TG_WAIT:-0}"
     rc=1
 
-    if curl -s -m "${TG_CURL_MAX:-15}" -o "$RESP" \
-        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${OFFSET}&timeout=${WAIT}"; then
+    if curl_url "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${OFFSET}&timeout=${WAIT}" \
+        -s -m "${TG_CURL_MAX:-15}" -o "$RESP"; then
         rc=0
         MAX_UPDATE_ID=""
         # Telegram's getUpdates response is a single JSON blob, but (unlike

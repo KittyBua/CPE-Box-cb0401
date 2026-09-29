@@ -17,7 +17,15 @@ ROUTER_IP="${ROUTER_IP:-192.168.31.1}"
 KEY_PATH="gui/router_key"
 SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o ConnectTimeout=5 -o BatchMode=yes)
 
-if [ -f "$KEY_PATH" ] && ssh "${SSH_OPTS[@]}" -i "$KEY_PATH" "root@$ROUTER_IP" true 2>/dev/null; then
+# Setup is considered done when BOTH the SSH key still works AND cpe-box's
+# own boot marker lives on the router - a naked working key isn't enough,
+# because the router's tmpfs /etc gets wiped on factory reset (or by some
+# firmware updates), which drops all our patches while the key itself
+# survives in the local repo. Without this second check start.sh would
+# happily skip to start_gui.sh and the panel would run half-broken (no
+# notification hooks, no SMS reader, no DFS patches).
+if [ -f "$KEY_PATH" ] && ssh "${SSH_OPTS[@]}" -i "$KEY_PATH" "root@$ROUTER_IP" \
+    "[ -f /etc/crontabs/patches/boot.sh ]" 2>/dev/null; then
   exec ./gui/start_gui.sh
 else
   exec ./setup.sh

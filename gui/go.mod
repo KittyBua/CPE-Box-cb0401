@@ -1,3 +1,3 @@
-module cb0401tunecontrol/gui
+module cpebox/gui
 
 go 1.21

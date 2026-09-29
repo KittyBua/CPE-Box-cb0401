@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CPE Box</title>
+<meta name="theme-color" content="#0b0e14">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%237c5cff'/%3E%3Cstop offset='1' stop-color='%2322d3ee'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='9' fill='url(%23g)'/%3E%3Cpath d='M9 22h3v-4H9zm5.5 0h3v-8h-3zm5.5 0h3V10h-3z' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/assets/app.css?v={{v}}">
+<script>
+  try { if (localStorage.getItem('cpebox-theme') === 'light') document.documentElement.dataset.theme = 'light'; } catch (e) {}
+</script>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-home" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="2"/><rect x="14" y="3" width="7" height="5" rx="2"/><rect x="14" y="12" width="7" height="9" rx="2"/><rect x="3" y="16" width="7" height="5" rx="2"/></symbol>
+  <symbol id="i-signal" viewBox="0 0 24 24"><path d="M5 20v-4M10 20v-8M15 20V8M20 20V4"/></symbol>
+  <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M12 20h.01M2 8.82a15 15 0 0 1 20 0M5 12.86a10 10 0 0 1 14 0M8.5 16.43a5 5 0 0 1 7 0"/></symbol>
+  <symbol id="i-devices" viewBox="0 0 24 24"><rect x="2" y="4" width="14" height="10" rx="2"/><path d="M6 18h6"/><rect x="17" y="8" width="5" height="12" rx="1.5"/></symbol>
+  <symbol id="i-router" viewBox="0 0 24 24"><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 16.5h.01M11 16.5h.01M8.5 9.5a5 5 0 0 1 7 0M6 7a8.5 8.5 0 0 1 12 0M12 13v-1"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><path d="m4 17 6-5-6-5M12 19h8"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3M12 9v4M12 17h.01"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 2v10M18.4 6.6a9 9 0 1 1-12.77.04"/></symbol>
+  <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></symbol>
+  <symbol id="i-data" viewBox="0 0 24 24"><path d="M12 4v12M7 11l5 5 5-5M5 20h14"/></symbol>
+  <symbol id="i-sim" viewBox="0 0 24 24"><path d="M7 3h7l5 5v13H7z"/><path d="M10 12h6v6h-6z"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></symbol>
+  <symbol id="i-tower" viewBox="0 0 24 24"><path d="M12 20v-6M8.5 10.5a5 5 0 0 1 7 0M5.5 7.5a9.5 9.5 0 0 1 13 0"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h6"/></symbol>
+  <symbol id="i-bulb" viewBox="0 0 24 24"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5M9 18h6M10 22h4"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/></symbol>
+  <symbol id="i-laptop" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2 20h20"/></symbol>
+  <symbol id="i-chip" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10 21a2 2 0 0 0 4 0"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+  <symbol id="i-msg" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+  <symbol id="i-net" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="16" y="16" width="6" height="6" rx="1"/><path d="M5 16v-3h14v3M12 8v5"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4zM22 2 11 13"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+  <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l4 2"/></symbol>
+</svg>
+
+<header class="topbar">
+  <a href="#overview" class="brand" aria-label="Overview">
+    <div class="logo"><svg viewBox="0 0 24 24"><path d="M4 18h3v-4H4zm6 0h3V9h-3zm6 0h3V5h-3z"/></svg></div>
+    <div><b>CPE Box</b><small id="model">Xiaomi 5G CPE Pro</small></div>
+  </a>
+  <div class="live" id="live" title="Current cellular connection">
+    <span class="bars q-good" id="liveBars"><i></i><i></i><i></i><i></i><i></i></span>
+    <span class="op" id="liveOp">connecting…</span>
+    <span class="pill accent" id="liveRat">—</span>
+  </div>
+  <button class="icon-btn" id="refreshBtn" title="Refresh now" aria-label="Refresh now"><svg class="i"><use href="#i-refresh"/></svg></button>
+  <button class="icon-btn" id="themeBtn" title="Light / dark" aria-label="Switch light or dark"></button>
+  <a class="icon-btn" id="logoutBtn" href="/logout" title="Sign out" aria-label="Sign out" hidden><svg class="i"><use href="#i-logout"/></svg></a>
+</header>
+
+<nav class="tabs" aria-label="Sections">
+  <a href="#overview"><svg class="i"><use href="#i-home"/></svg>Overview</a>
+  <a href="#cellular"><svg class="i"><use href="#i-signal"/></svg>Cellular</a>
+  <a href="#messages"><svg class="i"><use href="#i-msg"/></svg>Messages<span class="count" id="unreadCount" hidden></span></a>
+  <a href="#wifi"><svg class="i"><use href="#i-wifi"/></svg>Wi-Fi</a>
+  <a href="#devices"><svg class="i"><use href="#i-devices"/></svg>Devices<span class="count" id="untrustedCount" hidden></span></a>
+  <a href="#network"><svg class="i"><use href="#i-net"/></svg>Network</a>
+  <a href="#system"><svg class="i"><use href="#i-router"/></svg>Router</a>
+  <a href="#console"><svg class="i"><use href="#i-terminal"/></svg>Console</a>
+</nav>
+
+<main>
+  <div class="banner" id="connBanner" hidden><svg class="i"><use href="#i-alert"/></svg><span id="connBannerText">Can't reach the router.</span></div>
+  <div class="banner" id="simLockBanner" hidden><svg class="i"><use href="#i-alert"/></svg><span id="simLockText">SIM is locked. </span><a href="#cellular">Enter PIN →</a></div>
+
+  <!-- ============================================================ Overview -->
+  <section class="view" id="v-overview" data-title="Overview" hidden>
+    <div class="grid">
+      <div class="card span-8">
+        <div class="card-h"><div class="ico"><svg class="i"><use href="#i-signal"/></svg></div><h2>Signal</h2>
+          <div class="right"><a href="#cellular" class="pill accent">Bands &amp; mode</a></div></div>
+        <div class="hero">
+          <span class="bars big" id="ovBars"><i></i><i></i><i></i><i></i><i></i></span>
+          <div>
+            <div class="big" id="ovLabel"><span class="skel"></span></div>
+            <div class="meta" id="ovMeta">&nbsp;</div>
+          </div>
+          <div class="hero-side">
+            <div><div class="k">LTE RSRP</div><div class="v" id="ovLteRsrp">—</div></div>
+            <div><div class="k">5G RSRP</div><div class="v" id="ovNrRsrp">—</div></div>
+          </div>
+        </div>
+        <div class="section-label" style="margin-top:22px">LTE <span id="ovLteCell"></span></div>
+        <div class="meters" id="ovLteMeters"></div>
+        <div id="ovNrBlock">
+          <div class="section-label">5G NR <span id="ovNrCell"></span></div>
+          <div class="meters" id="ovNrMeters"></div>
+        </div>
+        <div class="band-tags" id="ovBands"></div>
+      </div>
+
+      <div class="card span-4">
+        <div class="card-h"><div class="ico cyan"><svg class="i"><use href="#i-data"/></svg></div><h2>Data usage</h2>
+          <div class="right"><span class="pill" id="duRate">—</span></div></div>
+        <div class="du-block">
+          <div class="du-row"><span class="k">Today</span><span class="v" id="duToday">—</span></div>
+          <div class="du-sub"><span>↓ <span id="duTodayRx">—</span></span><span>↑ <span id="duTodayTx">—</span></span></div>
+        </div>
+        <div class="du-block">
+          <div class="du-row"><span class="k">This month <small id="duSince"></small></span><span class="v" id="duMonth">—</span></div>
+          <div class="du-sub"><span>↓ <span id="duMonthRx">—</span></span><span>↑ <span id="duMonthTx">—</span></span></div>
+        </div>
+      </div>
+
+      <div class="card span-4">
+        <div class="card-h"><div class="ico green"><svg class="i"><use href="#i-cpu"/></svg></div><h2>Router</h2>
+          <div class="right"><span class="pill" id="ovUptime">up —</span></div></div>
+        <div class="gauges" id="ovGauges"></div>
+        <div class="toggle-row" style="margin-top:14px;padding-bottom:0;border-top:1px solid var(--border);padding-top:14px">
+          <div class="t"><b>Front lights</b><small>Status, Wi-Fi and signal LEDs</small></div>
+          <label class="switch"><input type="checkbox" id="ovLeds" aria-label="Front lights" disabled><span></span></label>
+        </div>
+      </div>
+
+      <div class="card span-4">
+        <div class="card-h"><div class="ico"><svg class="i"><use href="#i-wifi"/></svg></div><h2>Wi-Fi</h2>
+          <div class="right"><a href="#wifi" class="pill">Channels</a></div></div>
+        <div id="ovWifi"></div>
+      </div>
+
+      <div class="card span-4">
+        <div class="card-h"><div class="ico amber"><svg class="i"><use href="#i-devices"/></svg></div><h2>Devices</h2>
+          <div class="right"><a href="#devices" class="pill" id="ovDevPill">—</a></div></div>
+        <div class="stats">
+          <div class="stat"><div class="k">Online</div><div class="v" id="ovOnline">—</div></div>
+          <div class="stat"><div class="k">Not trusted</div><div class="v" id="ovUntrusted">—</div></div>
+        </div>
+        <div id="ovDevRecent" style="margin-top:10px"></div>
+      </div>
+
+      <div class="card span-6">
+        <div class="card-h"><div class="ico cyan"><svg class="i"><use href="#i-sim"/></svg></div><h2>SIM &amp; modem</h2>
+          <div class="right"><span class="pill" id="simPill">—</span></div></div>
+        <div id="ovSim"></div>
+      </div>
+
+      <div class="card span-6">
+        <div class="card-h"><div class="ico"><svg class="i"><use href="#i-globe"/></svg></div><h2>Open on your phone</h2></div>
+        <div id="ovAccess"><span class="skel"></span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ Cellular -->
+  <section class="view" id="v-cellular" data-title="Cellular" hidden>
+    <div class="grid">
+      <div class="span-7 stack">
+      <div class="card">
+        <div class="card-h"><div class="ico"><svg class="i"><use href="#i-tower"/></svg></div><h2>5G mode</h2>
+          <div class="right"><span class="pill" id="modeBadge">—</span></div></div>
+        <div class="seg" id="modeSeg" role="radiogroup" aria-label="5G mode">
+          <label><input type="radio" name="nrmode" value="0">Auto<small>SA + NSA</small></label>
+          <label><input type="radio" name="nrmode" value="1">NSA<small>5G on LTE</small></label>
+          <label><input type="radio" name="nrmode" value="2">SA only<small>standalone</small></label>
+          <label><input type="radio" name="nrmode" value="3">LTE only<small>5G off</small></label>
+        </div>
+        <div class="note"><svg class="i"><use href="#i-info"/></svg><span id="modeHelp">…</span></div>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><div class="ico"><svg class="i"><use href="#i-list"/></svg></div><h2>Bands</h2><span class="sub" id="modemModel"></span>
+          <div class="right presets" id="presets">
+            <button class="small" data-region="Europe">Europe</button>
+            <button class="small" data-region="America">America</button>
+            <button class="small" data-region="Asia">Asia</button>
+            <button class="small" data-region="All">All supported</button>
+          </div></div>
+        <div class="band-group"><div class="section-label">5G SA <span>standalone 5G</span></div><div class="chips" id="bandsSA"></div></div>
+        <div class="band-group"><div class="section-label">5G NSA <span>5G on top of an LTE anchor</span></div><div class="chips" id="bandsNSA"></div></div>
+        <div class="band-group"><div class="section-label">LTE</div><div class="chips" id="bandsLTE"></div></div>
+        <div class="legend">
+          <span><i style="background:color-mix(in srgb,var(--accent) 18%,transparent);box-shadow:inset 0 0 0 1px var(--accent)"></i>enabled</span>
+          <span><i style="box-shadow:inset 0 0 0 1px var(--good);background:radial-gradient(circle at 75% 25%,var(--good) 2px,transparent 2.6px)"></i>in use right now</span>
+          <span><i style="background:color-mix(in srgb,var(--warn) 12%,transparent);box-shadow:inset 0 0 0 1px var(--warn)"></i>enabled, but the modem can't use it</span>
+        </div>
+        <div class="note"><svg class="i"><use href="#i-info"/></svg><span id="bandsNote">Loading…</span></div>
+        <div class="dirty-bar">
+          <span class="msg" id="bandsMsg">Applied bands are kept by the modem and survive reboots.</span>
+          <button id="bandsDiscard" disabled>Discard</button>
+          <button class="primary" id="bandsApply" disabled>Apply bands</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><div class="ico cyan"><svg class="i"><use href="#i-globe"/></svg></div><h2>Access points (APN)</h2>
+          <div class="right"><button class="small" id="apnAddBtn"><svg class="i"><use href="#i-plus"/></svg>Add</button></div></div>
+        <div id="apnList"><div class="empty">Loading…</div></div>
+        <form id="apnForm" hidden style="margin-top:12px">
+          <div class="two">
+            <label class="field">Name<input type="text" name="file" required maxlength="32"></label>
+            <label class="field">APN<input type="text" name="apn" required maxlength="64"></label>
+            <label class="field">User<input type="text" name="user" maxlength="64" autocomplete="off"></label>
+            <label class="field">Password<input type="password" name="passwd" maxlength="64" autocomplete="off"></label>
+            <label class="field">IP type<select name="pdp"><option>IPv4 &amp; IPv6</option><option>IPv4</option><option>IPv6</option></select></label>
+            <label class="field">Authentication<select name="encryption"><option>NONE</option><option>PAP</option><option>CHAP</option><option>PAP &amp; CHAP</option></select></label>
+          </div>
+          <input type="hidden" name="id">
+          <div class="actions"><button class="primary" type="submit">Save</button><button type="button" id="apnCancel">Cancel</button></div>
+        </form>
+      </div>
+
+      </div>
+      <div class="span-5 stack">
+      <div class="card">
+        <div class="card-h"><div class="ico cyan"><svg class="i"><use href="#i-signal"/></svg></div><h2>Connection</h2>
+          <div class="right"><span class="pill" id="celRegPill">—</span></div></div>
+        <div id="celInfo"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><div class="ico green"><svg class="i"><use href="#i-data"/></svg></div><h2>Mobile data</h2></div>
+        <div class="toggle-row"><div class="t"><b>Mobile data</b><small>Off cuts the internet connection of the whole router</small></div>
+          <label class="switch"><input type="checkbox" id="mdData" disabled><span></span></label></div>
+        <div class="toggle-row" style="border-top:1px solid var(--border)"><div class="t"><b>Data roaming</b><small>Use other operators' networks abroad - may cost extra</small></div>
+          <label class="switch"><input type="checkbox" id="mdRoam" disabled><span></span></label></div>
+        <div class="section-label" style="margin-top:14px">SIM PIN <span id="pinRetry"></span></div>
+        <div class="pin-unlock" id="pinUnlockBox" hidden>
+          <div class="note warn"><svg class="i"><use href="#i-alert"/></svg><span id="pinUnlockMsg">The SIM is locked - enter the PIN to bring cellular back up.</span></div>
+          <form id="pinUnlockForm" class="two" style="margin-top:10px">
+            <label class="field" id="pinPukField" hidden>PUK<input type="password" name="puk" inputmode="numeric" autocomplete="off" pattern="[0-9]{8}" maxlength="8" placeholder="8 digits"></label>
+            <label class="field">PIN<input type="password" name="pin" inputmode="numeric" autocomplete="off" pattern="[0-9]{4,8}" minlength="4" maxlength="8" required placeholder="4-8 digits"></label>
+            <div class="actions" style="grid-column:1/-1;margin-top:4px"><button class="primary" type="submit" id="pinUnlockBtn">Unlock SIM</button></div>
+          </form>
+        </div>
+        <div class="toggle-row" style="padding-top:0"><div class="t"><b>Ask for the PIN</b><small>Protects the SIM if the router is taken</small></div>
+          <label class="switch"><input type="checkbox" id="pinLock" disabled><span></span></label></div>
+        <div class="toggle-row" style="border-top:1px solid var(--border)"><div class="t"><b>Remember the PIN</b><small>Unlock the SIM automatically after a reboot</small></div>
+          <label class="switch"><input type="checkbox" id="autoPin" disabled><span></span></label></div>
+        <div class="actions" style="margin-top:6px"><button class="small" id="pinChangeBtn"><svg class="i"><use href="#i-lock"/></svg>Change PIN</button></div>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><div class="ico"><svg class="i"><use href="#i-key"/></svg></div><h2>IMEI</h2><span class="sub">advanced · modifies modem</span></div>
+        <div class="note warn"><svg class="i"><use href="#i-alert"/></svg><span>Changing the IMEI rewrites the modem's identifier and is <b>not reversible</b> to the factory default — the previous value has to be typed back in by hand. Some carriers restrict SA to whitelisted devices; spoofing to one they know unlocks SA there, but may break the SIM contract or violate the ToS depending on the country. Use at your own risk.</span></div>
+        <div class="kv" style="margin-top:12px"><span class="k">Current IMEI</span><span class="v" id="imeiCurrent">—</span></div>
+        <label class="field" style="margin-top:12px">New IMEI<input type="text" id="imeiNew" inputmode="numeric" pattern="[0-9]{15}" minlength="15" maxlength="15" placeholder="15 digits" autocomplete="off"></label>
+        <div class="actions" style="margin-top:10px">
+          <button id="imeiCheckBtn">Read current</button>
+          <button class="primary" id="imeiApplyBtn">Write IMEI</button>
+          <span class="msg" id="imeiMsg"></span>
+        </div>
+      </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- =========================================================== Messages -->
+  <section class="view" id="v-messages" data-title="Messages" hidden>
+    <div class="grid">
+      <div class="card span-5" id="smsListCard">
+        <div class="card-h"><div class="ico"><svg class="i"><use href="#i-msg"/></svg></div><h2>Messages</h2><span class="sub" id="smsCount"></span>
+          <div class="right"><button class="primary small" id="smsNewBtn"><svg class="i"><use href="#i-plus"/></svg>New</button></div></div>
+        <div id="smsList"><div class="empty">Loading…</div></div>
+      </div>
+      <div class="card span-7" id="smsThreadCard">
+        <div class="card-h"><button class="icon-btn mobile-back" id="smsBack" aria-label="Back"><svg class="i"><use href="#i-back"/></svg></button>
+          <div class="ico cyan"><svg class="i"><use href="#i-phone"/></svg></div><h2 id="smsPeer">Pick a conversation</h2>
+          <div class="right"><button class="ghost small" id="smsDelete" hidden><svg class="i"><use href="#i-trash"/></svg>Delete</button></div></div>
+        <label class="field" id="smsToRow" hidden>To<input type="text" id="smsTo" placeholder="+49 170 1234567" autocomplete="off" inputmode="tel"></label>
+        <div class="thread" id="smsThread"><div class="empty">Messages to and from the SIM card show up here.</div></div>
+        <form class="composer" id="smsForm" hidden>
+          <textarea id="smsText" rows="2" maxlength="1000" placeholder="Message" style="font-family:inherit;font-size:14px"></textarea>
+          <button class="primary" type="submit" aria-label="Send"><svg class="i"><use href="#i-send"/></svg></button>
+        </form>
+        <div class="hint" id="smsLen"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================== Wi-Fi -->
+  <section class="view" id="v-wifi" data-title="Wi-Fi" hidden>
+    <div class="grid">
+      <div class="card span-6 wifi-band" id="wb2"><div class="empty">Loading…</div></div>
+      <div class="card span-6 wifi-band" id="wb1"><div class="empty">Loading…</div></div>
+
+      <div class="card span-12">
+        <div class="card-h"><div class="ico green"><svg class="i"><use href="#i-search"/></svg></div><h2>2.4 GHz channel scan</h2>
+          <div class="right"><button class="primary small" id="scanBtn">Scan now</button></div></div>
+        <p class="lead">Scores channels 1, 6 and 11 by how strong and how overlapping the networks around you are. Lower is clearer.</p>
+        <div id="scanResult"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ Devices -->
+  <section class="view" id="v-devices" data-title="Devices" hidden>
+    <div class="grid">
+      <div class="card span-8">
+        <div class="card-h"><div class="ico amber"><svg class="i"><use href="#i-devices"/></svg></div><h2>Devices</h2><span class="sub"><a href="#" class="dev-chip" data-show="online" id="devCountOn">— online</a> · <a href="#" class="dev-chip" data-show="offline" id="devCountOff">— offline</a></span></div>
+        <p class="lead">Trusted devices join silently. Anything else sends you an alert the moment it connects.</p>
+        <div class="toolbar">
+          <input type="text" id="devFilter" placeholder="Search name, vendor, IP or MAC" aria-label="Search devices">
+          <select id="devShow" aria-label="Show"><option value="all">All devices</option><option value="online">Online</option><option value="offline">Offline</option><option value="untrusted">Not trusted</option></select>
+        </div>
+        <div id="devList"><div class="empty">Loading…</div></div>
+        <div class="dirty-bar">
+          <span class="msg" id="devMsg"></span>
+          <button class="primary" id="devSave" disabled>Save trusted list</button>
+        </div>
+      </div>
+
+      <div class="card span-4">
+        <div class="card-h"><div class="ico"><svg class="i"><use href="#i-bell"/></svg></div><h2>Alerts</h2></div>
+        <p class="lead">Where new-device alerts and forwarded SMS go. Reply there to block a device.</p>
+        <div class="seg" id="notifySeg" role="radiogroup" aria-label="Alert channel">
+          <label><input type="radio" name="backend" value="ntfy">ntfy.sh</label>
+          <label><input type="radio" name="backend" value="telegram">Telegram</label>
+        </div>
+        <div id="ntfyFields" style="margin-top:16px">
+          <label class="field">Topic - subscribe to it in the ntfy app</label>
+          <div class="copy-row" style="margin-top:7px"><code id="ntfyTopic">—</code><button class="icon" data-copy="ntfyTopic" title="Copy" aria-label="Copy"><svg class="i"><use href="#i-copy"/></svg></button></div>
+        </div>
+        <div id="tgFields" style="margin-top:16px;display:grid;gap:12px" hidden>
+          <label class="field">Bot token<div class="pwd-wrap"><input type="text" id="tgToken" class="masked" placeholder="123456:AA…" autocomplete="off" spellcheck="false" data-form-type="other">
+            <button type="button" id="tgTokenEye" aria-label="Show token" title="Show token"><svg class="i"><use href="#i-eye"/></svg></button></div></label>
+          <label class="field">Chat ID<input type="text" id="tgChat" placeholder="123456789" autocomplete="off"></label>
+        </div>
+        <div class="toggle-row" style="margin-top:8px">
+          <div class="t"><b>Forward SMS</b><small>Texts that arrive on the SIM</small></div>
+          <label class="switch"><input type="checkbox" id="smsFwd" aria-label="Forward SMS"><span></span></label>
+        </div>
+        <div class="dirty-bar" style="margin-top:8px">
+          <span class="msg" id="notifyMsg"></span>
+          <button class="primary" id="notifySave" disabled>Save</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ Network -->
+  <section class="view" id="v-network" data-title="Network" hidden>
+    <div class="grid">
+      <div class="card span-6">
+        <div class="card-h"><div class="ico"><svg class="i"><use href="#i-net"/></svg></div><h2>Local network</h2></div>
+        <form id="lanForm">
+          <div class="two">
+            <label class="field">Router address<input type="text" name="ip" required pattern="[0-9.]+" inputmode="decimal"></label>
+            <label class="field">Subnet mask<select name="mask"><option>255.255.255.0</option><option>255.255.0.0</option></select></label>
+          </div>
+          <div class="actions"><button class="primary" type="submit">Change address</button><span class="msg">The router restarts; open the panel at the new address afterwards.</span></div>
+        </form>
+        <hr class="divider">
+        <form id="dhcpForm">
+          <div class="toggle-row" style="padding-top:0"><div class="t"><b>DHCP server</b><small>Hands out addresses to devices that join</small></div>
+            <label class="switch"><input type="checkbox" name="on"><span></span></label></div>
+          <div class="two" style="margin-top:6px">
+            <label class="field">First address<input type="number" name="start" min="2" max="254" required></label>
+            <label class="field">Last address<input type="number" name="end" min="2" max="254" required></label>
+            <label class="field">Lease time (hours)<input type="number" name="lease" min="1" max="168" required></label>
+          </div>
+          <div class="actions"><button class="primary" type="submit">Save DHCP</button><span class="msg" id="dhcpMsg"></span></div>
+        </form>
+      </div>
+
+      <div class="card span-6">
+        <div class="card-h"><div class="ico cyan"><svg class="i"><use href="#i-link"/></svg></div><h2>Address reservations</h2></div>
+        <p class="lead">These devices always get the same address. Add one from a device's row in Devices.</p>
+        <div id="bindList"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div class="card span-8">
+        <div class="card-h"><div class="ico amber"><svg class="i"><use href="#i-globe"/></svg></div><h2>Port forwarding</h2>
+          <div class="right"><button class="small" id="pfAddBtn"><svg class="i"><use href="#i-plus"/></svg>Add</button></div></div>
+        <p class="lead">Behind mobile carrier NAT (most SIMs) incoming connections can't reach you anyway - this only helps with a public IP.</p>
+        <div id="pfList"><div class="empty">Loading…</div></div>
+        <form id="pfForm" hidden style="margin-top:12px">
+          <div class="two">
+            <label class="field">Name<input type="text" name="name" required maxlength="32"></label>
+            <label class="field">Protocol<select name="protocol"><option value="3">TCP + UDP</option><option value="1">TCP</option><option value="2">UDP</option></select></label>
+            <label class="field">Outside port<input type="number" name="export" min="1" max="65535" required></label>
+            <label class="field">Device address<input type="text" name="ip" required inputmode="decimal"></label>
+            <label class="field">Device port<input type="number" name="inport" min="1" max="65535" required></label>
+          </div>
+          <div class="actions"><button class="primary" type="submit">Add rule</button><button type="button" id="pfCancel">Cancel</button></div>
+        </form>
+      </div>
+
+      <div class="card span-4">
+        <div class="card-h"><div class="ico green"><svg class="i"><use href="#i-shield"/></svg></div><h2>UPnP &amp; DMZ</h2></div>
+        <div class="toggle-row" style="padding-top:0"><div class="t"><b>UPnP</b><small>Lets games and apps open ports by themselves</small></div>
+          <label class="switch"><input type="checkbox" id="upnpOn" disabled><span></span></label></div>
+        <div id="upnpList"></div>
+        <div class="toggle-row" style="border-top:1px solid var(--border)"><div class="t"><b>DMZ</b><small>Forward everything unsolicited to one device</small></div>
+          <label class="switch"><input type="checkbox" id="dmzOn" disabled><span></span></label></div>
+        <label class="field" id="dmzIpRow" hidden>Device address<div class="copy-row"><input type="text" id="dmzIp" inputmode="decimal"><button class="primary" id="dmzSave">Save</button></div></label>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================= Router -->
+  <section class="view" id="v-system" data-title="Router" hidden>
+    <div class="grid">
+      <div class="card span-6">
+        <div class="card-h"><div class="ico green"><svg class="i"><use href="#i-cpu"/></svg></div><h2>Health</h2>
+          <div class="right"><span class="pill" id="sysUptime">up —</span></div></div>
+        <div class="gauges" id="sysGauges"></div>
+        <div id="sysKv" style="margin-top:16px"></div>
+      </div>
+
+      <div class="card span-6">
+        <div class="card-h"><div class="ico amber"><svg class="i"><use href="#i-bulb"/></svg></div><h2>Controls</h2></div>
+        <form id="nameForm"><label class="field">Router name<div class="copy-row"><input type="text" id="routerName" maxlength="32" required><button type="submit">Rename</button></div></label></form>
+        <div class="toggle-row">
+          <div class="t"><b>Front lights</b><small>Off stays off, even after a reboot</small></div>
+          <label class="switch"><input type="checkbox" id="sysLeds" aria-label="Front lights" disabled><span></span></label>
+        </div>
+        <div class="toggle-row" style="border-top:1px solid var(--border);margin-top:6px;padding-top:14px">
+          <div class="t"><b>Reboot</b><small>Internet and Wi-Fi drop for everyone for 1–2 minutes</small></div>
+          <button class="danger" id="rebootBtn"><svg class="i"><use href="#i-power"/></svg>Reboot</button>
+        </div>
+        <div class="msg" id="rebootMsg"></div>
+        <div class="toggle-row" style="border-top:1px solid var(--border);margin-top:6px;padding-top:14px">
+          <div class="t"><b>Firmware downgrade</b><small>Report version 0.0.1 until the next reboot, so the stock updater accepts an older image. Nothing is written to flash.</small></div>
+          <button id="spoofBtn"><svg class="i"><use href="#i-history"/></svg>Spoof</button>
+        </div>
+        <div class="msg" id="spoofMsg"></div>
+      </div>
+
+      <div class="card span-6">
+        <div class="card-h"><div class="ico"><svg class="i"><use href="#i-globe"/></svg></div><h2>Open on your phone</h2></div>
+        <div id="sysAccess"><span class="skel"></span></div>
+      </div>
+
+      <div class="card span-6">
+        <div class="card-h"><div class="ico red"><svg class="i"><use href="#i-key"/></svg></div><h2>Root password</h2></div>
+        <p class="lead">For SSH and for signing in to this panel from other devices. Kept on the router's persistent storage.</p>
+        <label class="field">New password<input type="password" id="newPw" autocomplete="new-password" placeholder="At least 4 characters"></label>
+        <div class="actions"><button class="danger" id="pwBtn">Change password</button><span class="msg" id="pwMsg"></span></div>
+      </div>
+
+      <div class="card span-12">
+        <div class="card-h"><div class="ico cyan"><svg class="i"><use href="#i-terminal"/></svg></div><h2>SSH</h2><span class="sub">root@<span id="sshHost">—</span></span></div>
+        <label class="field">With this computer's key</label>
+        <div class="copy-row" style="margin:7px 0 14px"><code id="sshKey">—</code><button class="icon" data-copy="sshKey" title="Copy" aria-label="Copy"><svg class="i"><use href="#i-copy"/></svg></button></div>
+        <label class="field">With the root password</label>
+        <div class="copy-row" style="margin-top:7px"><code id="sshPw">—</code><button class="icon" data-copy="sshPw" title="Copy" aria-label="Copy"><svg class="i"><use href="#i-copy"/></svg></button></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ Console -->
+  <section class="view" id="v-console" data-title="Console" hidden>
+    <div class="grid">
+      <div class="card span-12">
+        <div class="card-h"><div class="ico red"><svg class="i"><use href="#i-terminal"/></svg></div><h2>Run on the router</h2><span class="sub">as root, no restrictions</span></div>
+        <textarea id="cmd" rows="3" spellcheck="false" placeholder="uci show wireless"></textarea>
+        <div class="actions">
+          <button class="primary" id="runBtn">Run</button>
+          <button id="uciBtn">Dump all settings (UCI)</button>
+          <button class="ghost" id="clearBtn">Clear</button>
+          <span class="msg" id="runMsg">⌘/Ctrl + Enter runs it</span>
+        </div>
+        <pre class="console" id="out"></pre>
+      </div>
+
+      <div class="card span-12">
+        <div class="card-h"><div class="ico cyan"><svg class="i"><use href="#i-tower"/></svg></div><h2>AT to the modem</h2><span class="sub">Quectel RG520N via /dev/ttyUSB2</span></div>
+        <textarea id="atCmd" rows="2" spellcheck="false" placeholder='AT+QENG="servingcell"'></textarea>
+        <div class="actions" style="flex-wrap:wrap;gap:6px">
+          <button class="primary" id="atRunBtn">Send</button>
+          <button class="ghost" id="atClearBtn">Clear</button>
+          <span style="width:100%;height:0"></span>
+          <button class="small" data-at='AT+QENG="servingcell"'>Servingcell</button>
+          <button class="small" data-at='AT+QNWPREFCFG="mode_pref"'>Mode pref</button>
+          <button class="small" data-at='AT+QNWPREFCFG="nr5g_disable_mode"'>NR5G disable mode</button>
+          <button class="small" data-at='AT+QNWPREFCFG="lte_band"'>LTE bands</button>
+          <button class="small" data-at='AT+QNWPREFCFG="nsa_nr5g_band"'>NSA NR5G bands</button>
+          <button class="small" data-at='AT+QNWPREFCFG="nr5g_band"'>SA NR5G bands</button>
+          <button class="small" data-at='AT+QCAINFO'>QCA info</button>
+          <button class="small" data-at='AT+CGSN'>IMEI</button>
+          <button class="small" data-at='AT+CGMR'>Firmware</button>
+          <button class="small" data-at='AT+CIMI'>IMSI</button>
+          <span class="msg" id="atMsg">⌘/Ctrl + Enter sends it</span>
+        </div>
+        <pre class="console" id="atOut"></pre>
+      </div>
+    </div>
+  </section>
+</main>
+
+<nav class="tabbar" aria-label="Sections">
+  <a href="#overview"><svg class="i"><use href="#i-home"/></svg>Home</a>
+  <a href="#cellular"><svg class="i"><use href="#i-signal"/></svg>Cellular</a>
+  <a href="#messages"><svg class="i"><use href="#i-msg"/></svg>SMS</a>
+  <a href="#wifi"><svg class="i"><use href="#i-wifi"/></svg>Wi-Fi</a>
+  <a href="#devices"><svg class="i"><use href="#i-devices"/></svg>Devices</a>
+  <a href="#network"><svg class="i"><use href="#i-net"/></svg>Network</a>
+  <a href="#system"><svg class="i"><use href="#i-router"/></svg>Router</a>
+  <a href="#console"><svg class="i"><use href="#i-terminal"/></svg>Console</a>
+</nav>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script src="/assets/core.js?v={{v}}"></script>
+<script src="/assets/overview.js?v={{v}}"></script>
+<script src="/assets/cellular.js?v={{v}}"></script>
+<script src="/assets/wifi.js?v={{v}}"></script>
+<script src="/assets/devices.js?v={{v}}"></script>
+<script src="/assets/messages.js?v={{v}}"></script>
+<script src="/assets/network.js?v={{v}}"></script>
+<script src="/assets/system.js?v={{v}}"></script>
+<script src="/assets/main.js?v={{v}}"></script>
+</body>
+</html>

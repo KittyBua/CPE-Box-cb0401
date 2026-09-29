@@ -1,150 +1,99 @@
 #!/bin/sh
 #
-# cleanup.sh — removes unnecessary telemetry, dead cron jobs, and (optionally)
-# unused background daemons from a Xiaomi CB0401/CB0401V2 running stock
-# MiWiFi firmware. Meant to be copied onto the router and run there
-# directly (see ../setup.sh / ../setup.ps1, which do this for you).
+# cleanup.sh - strips a Xiaomi 5G CPE Pro (CB0401/CB0401V2) on stock MiWiFi
+# firmware down to what the router actually needs to route, run Wi-Fi and
+# stay on the cellular network: telemetry uploads, dead cron jobs, and the
+# background services that only talk to Xiaomi's cloud, the Mi Home app,
+# Mesh satellites or the carrier's remote management. Run ON the router as
+# root (setup.sh / setup.ps1 do this for you).
 #
-# Safe by default: only touches things with zero functional impact on the
-# router's actual job (routing/Wi-Fi/cellular). Riskier items that MIGHT
-# matter to some users are behind explicit flags — read the warnings below
-# before turning them on.
+# Everything is switched off by default. Keep a group if you use it:
+#   --keep-cloud   Xiaomi cloud / MQTT (messagingagent, xq_info_sync_mqtt,
+#                  mosquitto) - needed only for remote access via the Mi
+#                  WiFi / Mi Home app
+#   --keep-mesh    Xiaomi Mesh (cab_meshd, meshd, miwifi-discovery,
+#                  miwifi-roam) - needed only with Mesh satellite nodes
+#   --keep-tr069   carrier remote management (easycwmpd, tr069_stun)
+#   --keep-miot    Mi Home smart-device integration (miot)
 #
-# Usage (run ON the router, as root):
-#   sh cleanup.sh                        # safe telemetry + dead cron only
-#   sh cleanup.sh --disable-mesh         # + Xiaomi Mesh daemons (only if you
-#                                          don't use additional Mesh satellite
-#                                          nodes with this router)
-#   sh cleanup.sh --disable-messagingagent
-#                                        # + the MQTT cloud channel (only if
-#                                          you don't rely on the Mi Home app
-#                                          or carrier remote support for this
-#                                          device)
-#   sh cleanup.sh --all                  # everything above
+# smartcontroller is deliberately left alone: its web API is what
+# bootstrap/open_ssh uses to open SSH on newer firmware.
 #
 set -e
 
-DISABLE_MESH=0
-DISABLE_MSGAGENT=0
+KEEP_CLOUD=0
+KEEP_MESH=0
+KEEP_TR069=0
+KEEP_MIOT=0
 for arg in "$@"; do
   case "$arg" in
-    --disable-mesh) DISABLE_MESH=1 ;;
-    --disable-messagingagent) DISABLE_MSGAGENT=1 ;;
-    --all) DISABLE_MESH=1; DISABLE_MSGAGENT=1 ;;
+    --keep-cloud) KEEP_CLOUD=1 ;;
+    --keep-mesh) KEEP_MESH=1 ;;
+    --keep-tr069) KEEP_TR069=1 ;;
+    --keep-miot) KEEP_MIOT=1 ;;
   esac
 done
 
 DIR=/etc/crontabs/patches
-
 say() { echo "==> $*"; }
 
-disable_service() {
-  # $1 = init.d service name
-  if [ -f "/etc/init.d/$1" ]; then
-    /etc/init.d/"$1" stop >/dev/null 2>&1 || true
-    /etc/init.d/"$1" disable >/dev/null 2>&1 || true
-    say "disabled service: $1"
-  fi
-}
-
 remove_cron_matching() {
-  # $1 = grep pattern to remove from the root crontab
   if [ -f /etc/crontabs/root ] && grep -q "$1" /etc/crontabs/root 2>/dev/null; then
     grep -v "$1" /etc/crontabs/root > /etc/crontabs/root.new
     mv /etc/crontabs/root.new /etc/crontabs/root
-    say "removed cron entry matching: $1"
+    say "removed cron entry: $1"
   fi
 }
 
-say "Starting cleanup (mesh=$DISABLE_MESH, messagingagent=$DISABLE_MSGAGENT)"
-
-# --- Telemetry: safe to remove, no functional impact -----------------------
-# (These edit /etc/crontabs/root, which is a symlink into this router's
-# persistent /data partition, so — unlike the service disables below —
-# they survive a reboot on their own, no extra persistence needed.)
-
-# Usage-statistics uploader (web.log/rom.log/privacy.log -> Xiaomi cloud)
-remove_cron_matching 'sp_check.sh'
+# --- Telemetry and dead cron entries ------------------------------------------
+# /etc/crontabs/root and UCI live on the persistent /data partition, so these
+# survive reboots on their own.
+remove_cron_matching 'sp_check.sh'       # uploads web/rom/privacy logs to Xiaomi
+remove_cron_matching 'otapredownload'    # OTA pre-download (would also undo a downgrade)
+remove_cron_matching 'mobile_accel.sh'   # script doesn't exist on this build
+remove_cron_matching 'run-parts'         # /etc/periodic doesn't exist on this build
 uci set misc.features='features' 2>/dev/null || true
 uci set misc.features.statpointsNoLog='1' 2>/dev/null || true
 uci commit misc 2>/dev/null || true
 
-# Automatic firmware pre-download check (also protects any manual firmware
-# downgrade/config from being silently overwritten by an OTA update)
-remove_cron_matching 'otapredownload'
-
-# Google Breakpad crash reporter (uploads crash dumps to Xiaomi)
-disable_service breakpad
-
-# --- Dead cron entries: reference files that don't exist on this build -----
-
-remove_cron_matching 'mobile_accel.sh'
-remove_cron_matching 'run-parts'   # /etc/periodic doesn't exist on this firmware
-
-say "Safe cleanup done."
-
-# --- Optional: Xiaomi Mesh daemons ------------------------------------------
-# cab_meshd / miwifi-discovery / miwifi-roam run unconditionally at boot even
-# if you have no additional Mesh satellite node. If you DO use Mesh, do not
-# pass --disable-mesh.
-if [ "$DISABLE_MESH" = "1" ]; then
-  disable_service cab_meshd
-  disable_service miwifi-discovery
-  disable_service miwifi-roam
-  say "Mesh daemons disabled."
-fi
-
-# --- Optional: messagingagent (MQTT cloud channel) --------------------------
-# This may be used by the Mi Home app or by your carrier for remote support
-# on a leased/branded CPE. Only disable it if you don't need either.
-if [ "$DISABLE_MSGAGENT" = "1" ]; then
-  disable_service messagingagent.sh
-  say "messagingagent disabled."
-fi
-
-# --- Make the service disables above survive a reboot -----------------------
-# `/etc/init.d/X disable` only updates a symlink under /etc/rc.d, and this
-# router's /etc is entirely ramfs (ephemeral) - same root cause as the
-# root-password persistence issue documented in the README. Confirmed live:
-# breakpad/mesh/messagingagent silently came back "enabled" after a reboot
-# despite being disabled here. Fixed the same way ssh_patch.sh keeps SSH
-# open: a small script + a once-a-minute cron job that's a no-op after the
-# first run each boot (a /tmp lock file, cleared on every reboot since /tmp
-# is ramfs too), so it reapplies within a minute of booting and then goes
-# quiet.
+# --- Services -----------------------------------------------------------------
+# `/etc/init.d/X disable` only edits /etc/rc.d, which sits on this router's
+# ramfs /etc and reverts on every reboot, so the list is saved here and
+# re-applied once per boot by boot.sh (via cleanup_persist.sh).
 mkdir -p "$DIR"
 cat > "$DIR/cleanup.conf" <<EOF
-DISABLE_MESH=$DISABLE_MESH
-DISABLE_MSGAGENT=$DISABLE_MSGAGENT
+KEEP_CLOUD=$KEEP_CLOUD
+KEEP_MESH=$KEEP_MESH
+KEEP_TR069=$KEEP_TR069
+KEEP_MIOT=$KEEP_MIOT
 EOF
 
 cat > "$DIR/cleanup_persist.sh" <<'PERSIST_EOF'
 #!/bin/sh
-LOG_FN=/tmp/cleanup_persist.log
-[ -e "$LOG_FN" ] && exit 0
-: > "$LOG_FN"
+# Stops and disables the stock services cleanup.sh switched off.
 DIR=/etc/crontabs/patches
+KEEP_CLOUD=0 KEEP_MESH=0 KEEP_TR069=0 KEEP_MIOT=0
 [ -f "$DIR/cleanup.conf" ] && . "$DIR/cleanup.conf"
-disable_service() {
-    if [ -f "/etc/init.d/$1" ]; then
-        /etc/init.d/"$1" stop >/dev/null 2>&1 || true
-        /etc/init.d/"$1" disable >/dev/null 2>&1 || true
-    fi
+off() {
+    for s in "$@"; do
+        [ -f "/etc/init.d/$s" ] || continue
+        /etc/init.d/"$s" stop >/dev/null 2>&1 || true
+        /etc/init.d/"$s" disable >/dev/null 2>&1 || true
+        echo "off: $s"
+    done
 }
-disable_service breakpad
-if [ "$DISABLE_MESH" = "1" ]; then
-    disable_service cab_meshd
-    disable_service miwifi-discovery
-    disable_service miwifi-roam
-fi
-if [ "$DISABLE_MSGAGENT" = "1" ]; then
-    disable_service messagingagent.sh
-fi
-echo done > "$LOG_FN"
+off breakpad
+[ "$KEEP_CLOUD" = "1" ] || off messagingagent.sh xq_info_sync_mqtt mosquitto
+[ "$KEEP_MESH" = "1" ] || off cab_meshd meshd miwifi-discovery miwifi-roam
+[ "$KEEP_TR069" = "1" ] || off easycwmpd tr069_stun
+[ "$KEEP_MIOT" = "1" ] || off miot
+exit 0
 PERSIST_EOF
 chmod +x "$DIR/cleanup_persist.sh"
 
-grep -q cleanup_persist.sh /etc/crontabs/root 2>/dev/null || echo "*/1 * * * * $DIR/cleanup_persist.sh >/dev/null 2>&1" >> /etc/crontabs/root
-/etc/init.d/cron restart >/dev/null 2>&1 || true
+# Older versions ran cleanup_persist.sh from its own cron line; boot.sh does now.
+remove_cron_matching 'cleanup_persist.sh'
+rm -f /tmp/cleanup_persist.log
 
-say "Done. The telemetry/cron cleanup persists on its own; the service disables above now also reapply automatically within a minute of every reboot."
+sh "$DIR/cleanup_persist.sh" | while read -r line; do say "$line"; done
+say "Done (kept: cloud=$KEEP_CLOUD mesh=$KEEP_MESH tr069=$KEEP_TR069 miot=$KEEP_MIOT)."

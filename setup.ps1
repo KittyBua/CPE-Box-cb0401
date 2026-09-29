@@ -1,5 +1,5 @@
 #
-# setup.ps1 — one-shot, fully self-contained setup for CB0401 Tune +
+# setup.ps1 — one-shot, fully self-contained setup for CPE Box +
 # Control, for Windows. No Python, no third-party exploit tool - just
 # PowerShell, the OpenSSH Client Windows feature, and (optionally) Go if
 # you want to build the GUI from source instead of using a prebuilt binary.
@@ -52,7 +52,7 @@ function Copy-ToRouter {
     & scp @SshOpts -i $KeyPath @args
 }
 
-Say 'CB0401 Tune + Control setup'
+Say 'CPE Box setup'
 Write-Host "Router IP:      $RouterIp"
 Write-Host "GUI key path:   $KeyPath"
 
@@ -71,7 +71,7 @@ if (-not (Get-Command sshpass -ErrorAction SilentlyContinue)) {
 
 New-Item -ItemType Directory -Force -Path (Split-Path $KeyPath) | Out-Null
 if (-not (Test-Path $KeyPath)) {
-    ssh-keygen -t ed25519 -f $KeyPath -N '""' -C 'cb0401-tune-control-gui' -q
+    ssh-keygen -t ed25519 -f $KeyPath -N '""' -C 'cpe-box-gui' -q
 }
 
 # --- 2. Open SSH on the router -----------------------------------------------
@@ -190,7 +190,7 @@ if ($notifyBackend -eq 'telegram') {
     } else {
         $bytes = New-Object byte[] 8
         [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-        $ntfyTopic = 'cb0401v2-' + (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+        $ntfyTopic = 'cpebox-' + (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
     }
     Write-Host "ntfy.sh topic: $ntfyTopic"
     Write-Host '(This is a shared secret - anyone who knows it can read your device alerts'
@@ -218,116 +218,42 @@ function Write-UnixScript($SourcePath, $DestPath, $Substitute) {
 
 $notifyConf = "NOTIFY_BACKEND=$notifyBackend`nNTFY_TOPIC=$ntfyTopic`nTELEGRAM_BOT_TOKEN=$telegramBotToken`nTELEGRAM_CHAT_ID=$telegramChatId`n"
 [System.IO.File]::WriteAllText((Join-Path $tmpDir 'notify.conf'), $notifyConf)
-Write-UnixScript (Join-Path $RepoDir 'router\notify_common.sh') (Join-Path $tmpDir 'notify_common.sh') $null
-Write-UnixScript (Join-Path $RepoDir 'router\device_monitor.sh') (Join-Path $tmpDir 'device_monitor.sh') $null
-Write-UnixScript (Join-Path $RepoDir 'router\dhcp_notify.sh') (Join-Path $tmpDir 'dhcp_notify.sh') $null
-Write-UnixScript (Join-Path $RepoDir 'router\command_watcher.sh') (Join-Path $tmpDir 'command_watcher.sh') $null
-Write-UnixScript (Join-Path $RepoDir 'router\sms_notify.sh') (Join-Path $tmpDir 'sms_notify.sh') $null
-Write-UnixScript (Join-Path $RepoDir 'router\json_unescape.lua') (Join-Path $tmpDir 'json_unescape.lua') $null
-Write-UnixScript (Join-Path $RepoDir 'router\cleanup.sh') (Join-Path $tmpDir 'cleanup.sh') $null
-
-# sms-reader needs to run ON the router (ARM), so this always cross-builds
-# it fresh when Go is available - CGO_ENABLED=0 makes it a static,
-# syscall-only binary, so no ARM cross-compiler toolchain is needed, just
-# the same Go installation setup.ps1 already needs to build the GUI. If Go
-# isn't installed, fall back to a prebuilt one (see
-# router\sms-reader\build.sh) if someone's dropped one in; otherwise skip
-# SMS forwarding entirely rather than fail the rest of setup over it.
-$smsReaderBin = $null
-if (Get-Command go -ErrorAction SilentlyContinue) {
-    $smsReaderOut = Join-Path $tmpDir 'sms-reader'
-    Push-Location (Join-Path $RepoDir 'router\sms-reader')
-    $env:CGO_ENABLED = '0'; $env:GOOS = 'linux'; $env:GOARCH = 'arm'; $env:GOARM = '7'
-    & go build -ldflags="-s -w" -o $smsReaderOut .
-    $goExit = $LASTEXITCODE
-    Remove-Item Env:\CGO_ENABLED, Env:\GOOS, Env:\GOARCH, Env:\GOARM
-    Pop-Location
-    if ($goExit -eq 0) { $smsReaderBin = $smsReaderOut }
-} elseif (Test-Path (Join-Path $RepoDir 'router\sms-reader\dist\sms-reader-arm')) {
-    $smsReaderBin = Join-Path $tmpDir 'sms-reader'
-    Copy-Item (Join-Path $RepoDir 'router\sms-reader\dist\sms-reader-arm') $smsReaderBin
+foreach ($f in @('install.sh', 'cleanup.sh', 'notify_common.sh', 'device_monitor.sh', 'dhcp_notify.sh',
+                 'command_watcher.sh', 'sms_notify.sh', 'json_unescape.lua', 'boot.sh', 'sms_msg_hook.lua')) {
+    Write-UnixScript (Join-Path $RepoDir "router\$f") (Join-Path $tmpDir $f) $null
 }
+
+# sms-reader is the ARMv7 SQLite reader that runs ON the router. It ships
+# embedded inside every prebuilt cpe-box binary (see gui/embed_smsreader.go),
+# so Ensure-GuiBin makes it available; Fetch-SmsReader dumps it out. If Go
+# is installed it cross-builds a fresh one instead.
+. (Join-Path $RepoDir 'gui\fetch.ps1')
+if (-not (Ensure-GuiBin)) { throw "couldn't build or download CPE Box" }
+$smsReaderBin = Fetch-SmsReader $tmpDir
 if (-not $smsReaderBin) {
-    Write-Host "NOTE: couldn't build or find sms-reader (needs Go, or a prebuilt"
-    Write-Host "      router\sms-reader\dist\sms-reader-arm - see router\sms-reader\build.sh)."
-    Write-Host '      Skipping SMS forwarding; everything else is unaffected.'
+    Write-Host "NOTE: couldn't extract or build sms-reader (needs Go, or an already-fetched"
+    Write-Host '      cpe-box binary). Skipping SMS forwarding; everything else is unaffected.'
 }
 
-# Written to a script file and run with `sh`, rather than passed inline as an
-# ssh argument - Windows PowerShell's native-command argument marshalling
-# does not reliably escape embedded double quotes, and this command needs
-# them (for the crontab lines below).
-#
-# New-device alerts fire the instant dnsmasq grants a lease (dhcp_notify.sh,
-# wired as dnsmasq's own --dhcp-script hook below) instead of on a polling
-# timer - no delay, and nothing runs on the router between actual events.
-# device_monitor.sh is kept only for the one-shot baseline scan right after
-# install (so devices already connected before setup get seeded into
-# notified_macs.txt instead of alerting the moment the hook goes live) and
-# as a manual re-scan escape hatch; the old cron entry that used to poll it
-# every 3 minutes is removed if this is a re-run of an older install.
-$installCronScript = @'
-mkdir -p /etc/crontabs/patches
-cp /tmp/notify.conf /etc/crontabs/patches/notify.conf
-chmod 600 /etc/crontabs/patches/notify.conf
-cp /tmp/notify_common.sh /etc/crontabs/patches/notify_common.sh
-cp /tmp/device_monitor.sh /etc/crontabs/patches/device_monitor.sh
-cp /tmp/dhcp_notify.sh /etc/crontabs/patches/dhcp_notify.sh
-cp /tmp/command_watcher.sh /etc/crontabs/patches/command_watcher.sh
-cp /tmp/sms_notify.sh /etc/crontabs/patches/sms_notify.sh
-cp /tmp/json_unescape.lua /etc/crontabs/patches/json_unescape.lua
-[ -f /tmp/sms-reader ] && cp /tmp/sms-reader /etc/crontabs/patches/sms-reader
-rm -f /etc/crontabs/patches/ntfy_command_watcher.sh
-chmod +x /etc/crontabs/patches/notify_common.sh /etc/crontabs/patches/device_monitor.sh /etc/crontabs/patches/dhcp_notify.sh /etc/crontabs/patches/command_watcher.sh /etc/crontabs/patches/sms_notify.sh
-[ -f /etc/crontabs/patches/sms-reader ] && chmod +x /etc/crontabs/patches/sms-reader
-touch /etc/crontabs/patches/known_macs.txt
-sh /etc/crontabs/patches/device_monitor.sh
-uci set dhcp.@dnsmasq[0].dhcpscript="/etc/crontabs/patches/dhcp_notify.sh"
-uci commit dhcp
-/etc/init.d/dnsmasq reload >/dev/null 2>&1 || /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
-sed -i "/ntfy_command_watcher\.sh/d; /\/device_monitor\.sh/d; /command_watcher\.sh/d; /sms_notify\.sh/d" /etc/crontabs/root 2>/dev/null || true
-echo "* * * * * sh /etc/crontabs/patches/command_watcher.sh --ensure >/dev/null 2>&1" >> /etc/crontabs/root
-if [ -f /etc/crontabs/patches/sms-reader ]; then
-    echo "* * * * * sh /etc/crontabs/patches/sms_notify.sh --ensure >/dev/null 2>&1" >> /etc/crontabs/root
-fi
-/etc/init.d/cron restart >/dev/null 2>&1 || true
-sh /etc/crontabs/patches/command_watcher.sh --restart
-if [ -f /etc/crontabs/patches/sms-reader ]; then
-    sh /etc/crontabs/patches/sms_notify.sh
-    sh /etc/crontabs/patches/sms_notify.sh --restart
-fi
-'@
-$installCronScript = $installCronScript -replace "`r`n", "`n"
-[System.IO.File]::WriteAllText((Join-Path $tmpDir 'install_cron.sh'), $installCronScript)
-
-$filesToCopy = @(
-    (Join-Path $tmpDir 'notify.conf'), (Join-Path $tmpDir 'notify_common.sh'), (Join-Path $tmpDir 'device_monitor.sh'),
-    (Join-Path $tmpDir 'dhcp_notify.sh'), (Join-Path $tmpDir 'command_watcher.sh'), (Join-Path $tmpDir 'sms_notify.sh'),
-    (Join-Path $tmpDir 'json_unescape.lua'), (Join-Path $tmpDir 'cleanup.sh'), (Join-Path $tmpDir 'install_cron.sh')
-)
-if ($smsReaderBin) { $filesToCopy += $smsReaderBin }
-Copy-ToRouter @filesToCopy "root@${RouterIp}:/tmp/" | Out-Null
+& ssh @SshOpts -i $KeyPath "root@$RouterIp" 'rm -rf /tmp/cpebox && mkdir -p /tmp/cpebox'
+$filesToCopy = @(Get-ChildItem -File $tmpDir | ForEach-Object { $_.FullName })
+Copy-ToRouter @filesToCopy "root@${RouterIp}:/tmp/cpebox/" | Out-Null
 $scpExit = $LASTEXITCODE
 Remove-Item -Recurse -Force $tmpDir
 if ($scpExit -ne 0) { Die 'Could not copy the router scripts over SSH (scp failed).' }
 
-& ssh @SshOpts -i $KeyPath "root@$RouterIp" 'sh /tmp/install_cron.sh'
-Write-Host 'New-device alerts wired to dnsmasq (instant, no polling); command listener and SMS forwarder started on the router.'
-
-# --- 5. Cleanup --------------------------------------------------------
-
-Say 'Cleaning up telemetry and dead cron jobs on the router'
-# CLEANUP_FLAGS lets you pre-choose the opt-in items (--disable-mesh /
-# --disable-messagingagent / --all) so re-running setup doesn't need a
-# manual follow-up SSH each time. Leave unset for the safe-only default.
+# --- 5. Router install + cleanup ---------------------------------------------
+# router/install.sh is the one place everything done ON the router lives
+# (shared with setup.sh). It also runs cleanup.sh: telemetry, dead cron jobs
+# and the cloud/Mesh/TR-069/Mi Home services are switched off by default;
+# CLEANUP_FLAGS keeps a group you use (--keep-cloud / --keep-mesh /
+# --keep-tr069 / --keep-miot - see router/cleanup.sh).
+Say 'Installing on the router and cleaning it up'
 $cleanupFlags = $env:CLEANUP_FLAGS
-& ssh @SshOpts -i $KeyPath "root@$RouterIp" "sh /tmp/cleanup.sh $cleanupFlags"
+& ssh @SshOpts -i $KeyPath "root@$RouterIp" "sh /tmp/cpebox/install.sh $cleanupFlags"
+if ($LASTEXITCODE -ne 0) { Die 'The router-side install failed.' }
 if (-not $cleanupFlags) {
-    Write-Host '(To also disable Xiaomi Mesh daemons or messagingagent, either set the'
-    Write-Host " CLEANUP_FLAGS environment variable to '--disable-mesh'/'--disable-messagingagent'/"
-    Write-Host "'--all' and re-run this script, or SSH in and run cleanup.sh with those flags"
-    Write-Host ' directly - see router/cleanup.sh for what each one actually does before'
-    Write-Host ' opting in. These now persist across reboots on their own.)'
+    Write-Host "(Using the Mi WiFi/Mi Home app, Mesh satellites or carrier remote management? Re-run with e.g. `$env:CLEANUP_FLAGS='--keep-mesh'.)"
 }
 
 # --- 6. GUI --------------------------------------------------------------
@@ -349,6 +275,11 @@ if (Test-Path $EnvFile) {
     $bindLine = Get-Content $EnvFile | Where-Object { $_ -match '^GUI_BIND=' }
     if ($bindLine) { $keepGuiBind = ($bindLine -split '=', 2)[1] }
 }
+# Anything else in .env (the panel's session key, GUI_HOSTNAME, ...) is kept.
+$keepOther = @()
+if (Test-Path $EnvFile) {
+    $keepOther = @(Get-Content $EnvFile | Where-Object { $_ -and $_ -notmatch '^(ROUTER_IP|ROUTER_ROOT_PASSWORD|NOTIFY_BACKEND|NTFY_TOPIC|TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID|GUI_BIND)=' })
+}
 @"
 ROUTER_IP=$RouterIp
 ROUTER_ROOT_PASSWORD=$keepPassword
@@ -357,18 +288,14 @@ NTFY_TOPIC=$ntfyTopic
 TELEGRAM_BOT_TOKEN=$telegramBotToken
 TELEGRAM_CHAT_ID=$telegramChatId
 "@ | Set-Content -Path $EnvFile -Encoding ascii
-if ($keepGuiBind) { Add-Content -Path $EnvFile -Value "GUI_BIND=$keepGuiBind" -Encoding ascii }
+# Reachable from every device on the LAN by default (they log in with the
+# router root password); set GUI_BIND=127.0.0.1:7777 to keep it local.
+if (-not $keepGuiBind) { $keepGuiBind = '0.0.0.0:7777' }
+Add-Content -Path $EnvFile -Value "GUI_BIND=$keepGuiBind" -Encoding ascii
+if ($keepOther.Count) { Add-Content -Path $EnvFile -Value $keepOther -Encoding ascii }
 
 Say 'Unlocking modem bands and installing the 5G mode hook'
-$guiBin = Join-Path $RepoDir 'gui\cb0401-tune-control.exe'
-if (Get-Command go -ErrorAction SilentlyContinue) {
-    Push-Location (Join-Path $RepoDir 'gui')
-    go build -o $guiBin .
-    $buildOk = $LASTEXITCODE -eq 0
-    Pop-Location
-    if (-not $buildOk) { throw 'building the GUI failed' }
-}
-if (-not (Test-Path $guiBin)) { throw "no GUI binary at $guiBin (install Go, or copy a prebuilt one there - see gui/build.sh)" }
+$guiBin = Join-Path $RepoDir 'gui\cpe-box.exe'
 & $guiBin --provision
 if ($LASTEXITCODE -ne 0) { throw 'band unlock / 5G mode hook setup failed' }
 

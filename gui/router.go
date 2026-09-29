@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -59,7 +60,7 @@ func sshOpts() []string {
 		// one connection warm for 60s so subsequent calls piggy-back on
 		// it instead of racing the key exchange.
 		"-o", "ControlMaster=auto",
-		"-o", "ControlPath=/tmp/cb0401_ssh_%C",
+		"-o", "ControlPath=/tmp/cpebox_ssh_%C",
 		"-o", "ControlPersist=60",
 	}
 }
@@ -243,7 +244,7 @@ func atQuery(commands []string, wait time.Duration) (string, error) {
 		feed = append(feed, fmt.Sprintf(`printf '%s\r'; usleep %d`, c, wait.Microseconds()))
 	}
 	total := time.Duration(len(commands))*wait + 500*time.Millisecond
-	script := fmt.Sprintf(`L=/var/lock/LCK..ttyUSB2; O=/tmp/cb0401_at.$$
+	script := fmt.Sprintf(`L=/var/lock/LCK..ttyUSB2; O=/tmp/cpebox_at.$$
 for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   [ -e $L ] || break
   OWNER=$(tr -d ' \n' < $L 2>/dev/null)
@@ -377,28 +378,33 @@ func getCellularInfo() (map[string]any, error) {
 	}
 	var parsed struct {
 		SIM struct {
-			Status      int    `json:"status"`
-			PinRemains  int    `json:"pin_remains"`
-			PukRemains  int    `json:"puk_remains"`
-			Lock        int    `json:"lock"`
-			ICCID       string `json:"iccid"`
-			IMSI        string `json:"imsi"`
-			Number      string `json:"number"`
-			Country     string `json:"country"`
+			Status     int    `json:"status"`
+			PinRemains int    `json:"pin_remains"`
+			PukRemains int    `json:"puk_remains"`
+			Lock       int    `json:"lock"`
+			ICCID      string `json:"iccid"`
+			IMSI       string `json:"imsi"`
+			Number     string `json:"number"`
+			Country    string `json:"country"`
 		} `json:"sim"`
 		Status struct {
-			Registration int         `json:"registration"`
-			ISP          string      `json:"isp"`
-			APN          string      `json:"apn"`
-			RAT          string      `json:"rat"`
-			CellBand     string      `json:"cell_band"`
-			Cell5GBand   string      `json:"cell_band_5g"`
-			Level        int         `json:"level"`
-			RSRP         json.Number `json:"rsrp"`
-			RSRQ         json.Number `json:"rsrq"`
-			SNR          json.Number `json:"snr"`
-			RSSI         json.Number `json:"rssi"`
-			Roam         int         `json:"roam"`
+			Registration int    `json:"registration"`
+			ISP          string `json:"isp"`
+			APN          string `json:"apn"`
+			RAT          string `json:"rat"`
+			CellBand     string `json:"cell_band"`
+			Cell5GBand   string `json:"cell_band_5g"`
+			Level        int    `json:"level"`
+			RSRP         string `json:"rsrp"`
+			RSRQ         string `json:"rsrq"`
+			SNR          string `json:"snr"`
+			RSSI         string `json:"rssi"`
+			RSRP5G       string `json:"rsrp_5g"`
+			RSRQ5G       string `json:"rsrq_5g"`
+			SNR5G        string `json:"snr_5g"`
+			PCI          string `json:"pci"`
+			PCI5G        string `json:"pci_5g"`
+			Roam         int    `json:"roam"`
 		} `json:"status"`
 	}
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
@@ -427,10 +433,15 @@ func getCellularInfo() (map[string]any, error) {
 		"band_5g":      s.Cell5GBand,
 		"apn":          s.APN,
 		"level":        s.Level,
-		"rsrp":         s.RSRP.String(),
-		"rsrq":         s.RSRQ.String(),
-		"snr":          s.SNR.String(),
-		"rssi":         s.RSSI.String(),
+		"rsrp":         s.RSRP,
+		"rsrq":         s.RSRQ,
+		"snr":          s.SNR,
+		"rssi":         s.RSSI,
+		"rsrp_5g":      s.RSRP5G,
+		"rsrq_5g":      s.RSRQ5G,
+		"snr_5g":       s.SNR5G,
+		"pci":          s.PCI,
+		"pci_5g":       s.PCI5G,
 		"roaming":      s.Roam != 0,
 		"registered":   s.Registration == 1,
 		"sim_status":   simStatus,
@@ -444,10 +455,12 @@ func getCellularInfo() (map[string]any, error) {
 }
 
 // setNr5gMode sets AT+QNWPREFCFG="nr5g_disable_mode":
-//   0 = SA+NSA both enabled (modem picks NSA when available)
-//   1 = SA disabled (NSA/LTE only)
-//   2 = NSA disabled (force SA only)
-//   3 = all NR5G disabled (LTE only)
+//
+//	0 = SA+NSA both enabled (modem picks NSA when available)
+//	1 = SA disabled (NSA/LTE only)
+//	2 = NSA disabled (force SA only)
+//	3 = all NR5G disabled (LTE only)
+//
 // The stock daemon doesn't manage this setting at all (it lives in the
 // modem's NV), so the only thing needed to keep it is the mode hook, which
 // re-asserts it on every wan_2 ifup in case anything resets it.
@@ -500,20 +513,31 @@ func normalizeBandList(s string) (string, error) {
 // same call the stock web UI's setCellularBand makes. The daemon programs
 // the modem over QMI and saves the lists to UCI, and re-applies them on its
 // own every time it starts, so nothing on our side has to re-assert them.
+//
+// The daemon returns code -1 while the modem is mid-reconnect (right after a
+// mode change, an APN switch, or on first-boot before it's registered),
+// which is transient - so we retry a few times before giving up.
 func applyBandsViaDaemon(lte, sa, nsa string) error {
-	payload, _ := json.Marshal(map[string]string{"lte_band": lte, "sa_band": sa, "nsa_band": nsa})
+	payload, _ := json.Marshal(map[string]string{"method": "set", "lte_band": lte, "sa_band": sa, "nsa_band": nsa})
 	b64 := base64.StdEncoding.EncodeToString(payload)
-	out, err := run(fmt.Sprintf(`ubus call mobile device "$(echo %s | base64 -d)"`, b64), 90*time.Second)
-	if err != nil {
-		return err
+	var last string
+	for attempt := 1; attempt <= 5; attempt++ {
+		out, err := run(fmt.Sprintf(`ubus call mobile device "$(echo %s | base64 -d)"`, b64), 90*time.Second)
+		if err != nil {
+			return err
+		}
+		last = strings.TrimSpace(out)
+		var resp struct {
+			Code *int `json:"code"`
+		}
+		if json.Unmarshal([]byte(out), &resp) == nil && resp.Code != nil && *resp.Code == 0 {
+			return nil
+		}
+		if attempt < 5 {
+			time.Sleep(time.Duration(attempt*2) * time.Second)
+		}
 	}
-	var resp struct {
-		Code *int `json:"code"`
-	}
-	if json.Unmarshal([]byte(out), &resp) != nil || resp.Code == nil || *resp.Code != 0 {
-		return routerErrf("The modem daemon rejected the band change: %s", strings.TrimSpace(out))
-	}
-	return nil
+	return routerErrf("The modem daemon rejected the band change after 5 tries: %s", last)
 }
 
 func setBands(nr5gBand, nsaNr5gBand, lteBand string) (map[string]string, error) {
@@ -803,6 +827,28 @@ func spoofFirmwareVersion() (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// getRouterModel reads the hardware model ("CB0401" or "CB0401V2") and
+// firmware version from the stock version file. The downgrade spoof above
+// only rewrites the ROM line, so a spoofed router reports "0.0.1" here -
+// which is accurate for as long as the spoof is active.
+func getRouterModel() (map[string]string, error) {
+	out, err := run(fmt.Sprintf(`sed -n "s/.*option HARDWARE '\\(.*\\)'/HW=\\1/p; s/.*option ROM '\\(.*\\)'/ROM=\\1/p" %s`, versionSpoofTarget), 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	v := parseConf(out)
+	hw := strings.ToUpper(v["HW"])
+	model := hw
+	if strings.HasPrefix(hw, "CB0401") {
+		rev := strings.TrimPrefix(hw, "CB0401")
+		if rev == "" {
+			rev = "V1"
+		}
+		model = "CB0401 " + rev
+	}
+	return map[string]string{"model": model, "firmware": v["ROM"]}, nil
+}
+
 // Persisting the 5G SA/NSA mode. Bands don't need any of this: the stock
 // mobile daemon keeps them in UCI and re-applies them itself (see
 // applyBandsViaDaemon). nr5g_disable_mode is the one setting the daemon
@@ -832,19 +878,24 @@ echo "5g mode hook installed" > /tmp/5g_band_patch.log
 	// Goes through microcom (and its port lock) like the stock at_cmd.sh,
 	// so it can't interleave with the stock daemon's own AT traffic.
 	modeHookScript = `#!/bin/sh
-# cb0401-tune-control: 5G mode hook v2 (mode only - bands are kept by the stock mobile daemon)
+# cpe-box: router hook v3 (5G mode + LEDs; bands are kept by the stock mobile daemon)
 [ "$ACTION" = "ifup" ] || exit 0
 [ "$INTERFACE" = "wan_2" ] || exit 0
 NR5G_MODE=""
+LEDS=""
 [ -f /data/custom/hooks/band_prefs.conf ] && . /data/custom/hooks/band_prefs.conf
-[ -n "$NR5G_MODE" ] || exit 0
-L=/var/lock/LCK..ttyUSB2
-for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -e $L ] || break; usleep 250000; done
-printf 'AT+QNWPREFCFG="nr5g_disable_mode",%s\r' "$NR5G_MODE" | busybox microcom /dev/ttyUSB2 >/dev/null 2>&1 & P=$!
-usleep 800000
-kill $P 2>/dev/null
+if [ -n "$NR5G_MODE" ]; then
+  L=/var/lock/LCK..ttyUSB2
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -e $L ] || break; usleep 250000; done
+  printf 'AT+QNWPREFCFG="nr5g_disable_mode",%s\r' "$NR5G_MODE" | busybox microcom /dev/ttyUSB2 >/dev/null 2>&1 & P=$!
+  usleep 800000
+  kill $P 2>/dev/null
+fi
+if [ "$LEDS" = "0" ]; then
+` + ledsOffScript + `
+fi
 `
-	modeHookMarker        = "5G mode hook v2"
+	modeHookMarker      = "router hook v3"
 	modeFirewallSnippet = `
 config include 'auto_5g_band_patch'
 	option type 'script'
@@ -876,20 +927,32 @@ func installModeHook() error {
 	return err
 }
 
-// migrateLegacyBandHook upgrades routers set up by earlier versions, whose
-// hook re-wrote the 5G bands over AT on every reconnect from
-// band_prefs.conf. Those bands are handed to the stock daemon instead (so
-// they survive once the old hook stops writing them), then the hook is
-// replaced by the mode-only one. Safe to call repeatedly; does nothing on
-// routers without a hook or with the current one.
+// migrateLegacyBandHook upgrades routers set up by earlier versions:
+//   - v1 hooks (0.2.x-0.3.2) re-wrote the 5G bands over AT on every reconnect
+//     from band_prefs.conf. Those bands are handed to the stock
+//     daemon instead (so they survive once the old hook stops writing them)
+//     and band_prefs.conf is rewritten with just the mode.
+//   - v2 hook (0.3.3 dev builds) handled the mode only; its prefs are kept as they are.
+//
+// Either way the script is then replaced by the current one. Safe to call
+// repeatedly; does nothing on routers without a hook or with the current one.
 func migrateLegacyBandHook() error {
 	hookMu.Lock()
 	defer hookMu.Unlock()
-	raw, err := run(fmt.Sprintf(`[ -f %[1]s ] || { echo NOHOOK; exit 0; }; grep -q %[2]q %[1]s && { echo CURRENT; exit 0; }; echo LEGACY; cat %[3]s 2>/dev/null`, modeHookPath, modeHookMarker, modePrefsPath), 10*time.Second)
+	return migrateLegacyBandHookLocked()
+}
+
+func migrateLegacyBandHookLocked() error {
+	raw, err := run(fmt.Sprintf(`[ -f %[1]s ] || { echo NOHOOK; exit 0; }; grep -q %[2]q %[1]s && { echo CURRENT; exit 0; }
+grep -q nsa_nr5g_band %[1]s && echo V1 || echo V2; cat %[3]s 2>/dev/null`, modeHookPath, modeHookMarker, modePrefsPath), 10*time.Second)
 	if err != nil {
 		return err
 	}
-	if !strings.HasPrefix(strings.TrimSpace(raw), "LEGACY") {
+	switch strings.SplitN(strings.TrimSpace(raw), "\n", 2)[0] {
+	case "V2":
+		return installModeHook()
+	case "V1":
+	default:
 		return nil
 	}
 	prefs := parseConf(raw)
@@ -897,8 +960,8 @@ func migrateLegacyBandHook() error {
 	if err != nil {
 		return err
 	}
-	sa, _ := normalizeBandList(prefs["NR5G_BAND"])
-	nsa, _ := normalizeBandList(prefs["NSA_NR5G_BAND"])
+	sa, _ := normalizeBandList(strings.Trim(prefs["NR5G_BAND"], `"'`))
+	nsa, _ := normalizeBandList(strings.Trim(prefs["NSA_NR5G_BAND"], `"'`))
 	curSA, _ := normalizeBandList(u["SA"])
 	curNSA, _ := normalizeBandList(u["NSA"])
 	lte, _ := normalizeBandList(u["LTE"])
@@ -913,21 +976,31 @@ func migrateLegacyBandHook() error {
 			return err
 		}
 	}
+	// The earliest band hooks forced SA+NSA (mode 0); later ones read the
+	// mode from band_prefs.conf too.
 	mode := prefs["NR5G_MODE"]
 	if len(mode) != 1 || mode < "0" || mode > "3" {
 		mode = "0"
 	}
-	if _, err := run(fmt.Sprintf("printf 'NR5G_MODE=%%s\\n' %s > %s", mode, modePrefsPath), 10*time.Second); err != nil {
+	if _, err := run(fmt.Sprintf("printf 'NR5G_MODE=%s\\n' > %s", mode, modePrefsPath), 10*time.Second); err != nil {
 		return err
 	}
 	return installModeHook()
 }
 
-// saveModePref records the mode for the hook to re-assert, installing the
-// hook first if this router doesn't have it yet (only needed once a
-// non-default mode is chosen).
-func saveModePref(mode int) error {
-	if err := migrateLegacyBandHook(); err != nil {
+var prefKeyRe = regexp.MustCompile(`^[A-Z0-9_]+$`)
+var prefValRe = regexp.MustCompile(`^[a-z0-9]*$`)
+
+// setHookPref records one setting for the router hook to re-apply,
+// installing (or upgrading) the hook first. The whole read-modify-write
+// runs under hookMu so two settings saved at once can't drop each other.
+func setHookPref(key, value string) error {
+	if !prefKeyRe.MatchString(key) || !prefValRe.MatchString(value) {
+		return fmt.Errorf("invalid hook pref %s=%s", key, value)
+	}
+	hookMu.Lock()
+	defer hookMu.Unlock()
+	if err := migrateLegacyBandHookLocked(); err != nil {
 		return err
 	}
 	out, err := run(fmt.Sprintf("[ -f %s ] && echo 1 || echo 0", modeHookPath), 10*time.Second)
@@ -935,21 +1008,67 @@ func saveModePref(mode int) error {
 		return err
 	}
 	if strings.TrimSpace(out) != "1" {
-		if mode == 0 {
-			return nil
-		}
 		if err := installModeHook(); err != nil {
 			return err
 		}
 	}
-	_, err = run(fmt.Sprintf("printf 'NR5G_MODE=%%d\\n' %d > %s", mode, modePrefsPath), 10*time.Second)
+	_, err = run(fmt.Sprintf("touch %[1]s; sed -i '/^%[2]s=/d' %[1]s; echo '%[2]s=%[3]s' >> %[1]s", modePrefsPath, key, value), 10*time.Second)
 	return err
+}
+
+func saveModePref(mode int) error { return setHookPref("NR5G_MODE", strconv.Itoa(mode)) }
+
+// Front LEDs, through the stock firmware's own switch (led_ctl, which the
+// stock web UI calls): it persists the choice in UCI and the stock LED
+// service honours it for the status and Wi-Fi LEDs. The 4G/5G signal LEDs
+// aren't covered by it - the stock signal script re-lights them on every
+// signal change - so those are "hung up" in the LED service too, and the
+// router hook repeats that after a reboot. The stock "on" path calls an
+// LED function this model doesn't define, which left the Wi-Fi LED dark,
+// so turning back on also lifts every hang-up and re-triggers the current
+// signal LED explicitly.
+const (
+	ledNetFuncs   = "net_4g_signal_good net_4g_signal_poor net_5g_signal_good net_5g_signal_poor"
+	ledsOffScript = `led_ctl led_off >/dev/null 2>&1
+for f in ` + ledNetFuncs + `; do xqled hangup $f; done
+xqled net_4g_off; xqled net_5g_off`
+	ledsOnScript = `led_ctl led_on >/dev/null 2>&1
+for f in func_off wifi_off sys_off ` + ledNetFuncs + `; do xqled resume $f; done
+xqled sys_ok; xqled wifi_on
+S=$(ubus call mobile dump_status 2>/dev/null)
+T=4G; echo "$S" | grep -q '"rat": "5G' && T=5G
+LV=$(echo "$S" | sed -n 's/.*"level": \([0-9]*\).*/\1/p' | head -1)
+SIG=WEAK; [ "${LV:-0}" -ge 3 ] && SIG=STRONG
+ACTION=led TYPE=$T SIGNAL=$SIG sh /lib/mobile.d/01-signal_led.sh`
+)
+
+func getLeds() (map[string]any, error) {
+	out, err := run(fmt.Sprintf(`echo "BLUE=$(uci -q get xiaoqiang.common.BLUE_LED)"; grep '^LEDS=' %s 2>/dev/null || true`, modePrefsPath), 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	v := parseConf(out)
+	return map[string]any{"on": v["BLUE"] != "0" && v["LEDS"] != "0"}, nil
+}
+
+func setLeds(on bool) (map[string]any, error) {
+	val, script := "1", ledsOnScript
+	if !on {
+		val, script = "0", ledsOffScript
+	}
+	if err := setHookPref("LEDS", val); err != nil {
+		return nil, err
+	}
+	if _, err := run(script, 30*time.Second); err != nil {
+		return nil, err
+	}
+	return getLeds()
 }
 
 const bandsUnlockedMarker = "/data/custom/hooks/.bands_unlocked"
 
 // provisionRouter is what setup.sh/setup.ps1 run once the GUI is built
-// (`cb0401-tune-control --provision`): upgrade a legacy band hook, install
+// (`cpe-box --provision`): upgrade a legacy band hook, install
 // the 5G mode hook, and on the very first run enable every band the modem
 // hardware actually supports. That first-run unlock is recorded on the
 // router, so re-running setup never overrides a band choice made since.
@@ -987,7 +1106,18 @@ func provisionRouter() error {
 	}
 	fmt.Println("Enabling every band this modem supports (the modem may briefly reconnect)...")
 	if err := applyBandsViaDaemon(hw.lte, hw.nr, hw.nr); err != nil {
-		return err
+		// Provisioning bands is polish for the first run - the modem is
+		// working already with whatever bands the stock daemon set at
+		// factory. Failing here (usually because the modem is still
+		// mid-reconnect from a firmware boot or a previous band change)
+		// mustn't kill the whole setup: everything else - the SSH bridge,
+		// the notification hooks, the panel itself - is done, and the
+		// user can retry from Cellular > Bands whenever the modem is idle.
+		// We deliberately don't touch the marker so the next setup run
+		// tries again automatically.
+		fmt.Printf("WARNING: couldn't unlock every band right now (%v).\n", err)
+		fmt.Println("         The setup itself succeeded; pick bands from Cellular > Bands in the panel.")
+		return nil
 	}
 	if _, err := run("touch "+bandsUnlockedMarker, 10*time.Second); err != nil {
 		return err
@@ -1020,7 +1150,9 @@ func getWifiStatus() map[string]map[string]any {
 		if m := wifiInfoTxpRe.FindStringSubmatch(info); m != nil {
 			txpower, _ = strconv.ParseFloat(m[1], 64)
 		}
-		clientsRaw, _ := run(fmt.Sprintf("iw dev %s station dump | grep -c Station || true", dev.iface), 0)
+		// The Qualcomm driver doesn't report stations to nl80211 (iw station
+		// dump is always empty), only through its own wlanconfig.
+		clientsRaw, _ := run(fmt.Sprintf(`wlanconfig %s list sta 2>/dev/null | grep -ciE '^[0-9a-f]{2}(:[0-9a-f]{2}){5} ' || true`, dev.iface), 0)
 		clientsRaw = strings.TrimSpace(clientsRaw)
 		if clientsRaw == "" {
 			clientsRaw = "0"
@@ -1034,10 +1166,21 @@ func getWifiStatus() map[string]map[string]any {
 	return result
 }
 
+var (
+	wifiChannelRe = regexp.MustCompile(`^(auto|[0-9]{1,3})$`)
+	wifiBwRe      = regexp.MustCompile(`^[0-9]{2,3}$`)
+)
+
 func setWifi(band string, channel, bw string) (map[string]map[string]any, error) {
 	dev, ok := wifiDevices[band]
 	if !ok {
 		return nil, routerErrf("Unknown Wi-Fi band: %s", band)
+	}
+	if channel != "" && !wifiChannelRe.MatchString(channel) {
+		return nil, routerErrf("Invalid channel: %s", channel)
+	}
+	if bw != "" && !wifiBwRe.MatchString(bw) {
+		return nil, routerErrf("Invalid channel width: %s", bw)
 	}
 	var cmds []string
 	if channel != "" {
@@ -1076,18 +1219,25 @@ func parseProcStatCPULine(line string) (idle, total int64) {
 	return idle, total
 }
 
+// getSystemHealth reads everything in one SSH round-trip. CPU usage needs
+// two /proc/stat samples a second apart, taken on the router itself so
+// network latency can't skew the interval. Memory comes from /proc/meminfo
+// (MemAvailable - what's really free once reclaimable cache is counted):
+// `free` output differs between firmware builds and on some it had no
+// "-/+ buffers/cache" line at all, which left RAM blank.
 func getSystemHealth() (map[string]any, error) {
-	result := map[string]any{}
-
-	// Two /proc/stat samples one second apart, in ONE SSH session -
-	// without that, network latency between two separate calls would
-	// distort the interval.
-	raw, err := run("cat /proc/stat | head -1; sleep 1; cat /proc/stat | head -1", 0)
+	raw, err := run(`head -1 /proc/stat; sleep 1; head -1 /proc/stat; echo @@; cat /proc/loadavg; echo @@; cat /proc/meminfo; echo @@; cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null; echo @@; cat /proc/uptime`, 0)
 	if err != nil {
 		return nil, err
 	}
+	parts := strings.Split(raw, "@@")
+	for len(parts) < 5 {
+		parts = append(parts, "")
+	}
+	result := map[string]any{}
+
 	var cpuLines []string
-	for _, l := range strings.Split(strings.TrimSpace(raw), "\n") {
+	for _, l := range strings.Split(strings.TrimSpace(parts[0]), "\n") {
 		if strings.HasPrefix(l, "cpu ") {
 			cpuLines = append(cpuLines, l)
 		}
@@ -1095,84 +1245,60 @@ func getSystemHealth() (map[string]any, error) {
 	if len(cpuLines) >= 2 {
 		idle1, total1 := parseProcStatCPULine(cpuLines[0])
 		idle2, total2 := parseProcStatCPULine(cpuLines[1])
-		dt := total2 - total1
-		if dt > 0 {
+		if dt := total2 - total1; dt > 0 {
 			result["cpu_pct"] = roundTo(100*(1-float64(idle2-idle1)/float64(dt)), 1)
 		}
 	}
 
-	loadRaw, err := run("cat /proc/loadavg", 0)
-	if err == nil {
-		parts := strings.Fields(strings.TrimSpace(loadRaw))
-		if len(parts) >= 3 {
-			l1, _ := strconv.ParseFloat(parts[0], 64)
-			l5, _ := strconv.ParseFloat(parts[1], 64)
-			l15, _ := strconv.ParseFloat(parts[2], 64)
-			result["load1"], result["load5"], result["load15"] = l1, l5, l15
-		}
+	if f := strings.Fields(parts[1]); len(f) >= 3 {
+		l1, _ := strconv.ParseFloat(f[0], 64)
+		l5, _ := strconv.ParseFloat(f[1], 64)
+		l15, _ := strconv.ParseFloat(f[2], 64)
+		result["load1"], result["load5"], result["load15"] = l1, l5, l15
 	}
 
-	freeRaw, err := run("free", 0)
-	if err == nil {
-		for _, line := range strings.Split(strings.TrimSpace(freeRaw), "\n") {
-			if strings.HasPrefix(line, "Mem:") {
-				f := strings.Fields(line)
-				if len(f) >= 3 {
-					total, _ := strconv.ParseInt(f[1], 10, 64)
-					used, _ := strconv.ParseInt(f[2], 10, 64)
-					result["mem_total_kb"], result["mem_used_kb"] = total, used
-				}
-			}
-			// "-/+ buffers/cache: used free" is the actually-available
-			// memory (buffers/cache get reclaimed on demand), not a naive
-			// subtraction.
-			if strings.HasPrefix(line, "-/+ buffers/cache:") {
-				f := strings.Fields(line)
-				if len(f) >= 4 {
-					free, _ := strconv.ParseInt(f[3], 10, 64)
-					result["mem_free_real_kb"] = free
-				}
-			}
+	mem := map[string]int64{}
+	for _, l := range strings.Split(parts[2], "\n") {
+		if f := strings.Fields(l); len(f) >= 2 {
+			v, _ := strconv.ParseInt(f[1], 10, 64)
+			mem[strings.TrimSuffix(f[0], ":")] = v
 		}
 	}
-
-	tempsRaw, err := run("cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null", 0)
-	if err == nil {
-		var temps []int64
-		for _, t := range strings.Split(strings.TrimSpace(tempsRaw), "\n") {
-			t = strings.TrimSpace(t)
-			if t == "" {
-				continue
-			}
-			if v, e := strconv.ParseInt(t, 10, 64); e == nil {
-				temps = append(temps, v)
-			}
+	if total := mem["MemTotal"]; total > 0 {
+		avail, ok := mem["MemAvailable"]
+		if !ok {
+			avail = mem["MemFree"] + mem["Buffers"] + mem["Cached"]
 		}
-		if len(temps) > 0 {
-			var sum, max int64
-			max = temps[0]
-			for _, t := range temps {
-				sum += t
-				if t > max {
-					max = t
-				}
-			}
-			// this platform reports whole degrees Celsius directly (not milli-C)
-			result["temp_c_max"] = max
-			result["temp_c_avg"] = roundTo(float64(sum)/float64(len(temps)), 1)
-		}
+		result["mem_total_kb"] = total
+		result["mem_free_real_kb"] = avail
+		result["mem_used_kb"] = total - avail
 	}
 
-	uptimeRaw, err := run("cat /proc/uptime", 0)
-	if err == nil {
-		fields := strings.Fields(strings.TrimSpace(uptimeRaw))
-		if len(fields) > 0 {
-			if v, e := strconv.ParseFloat(fields[0], 64); e == nil {
-				result["uptime_sec"] = int64(v)
-			}
+	var temps []int64
+	for _, t := range strings.Fields(parts[3]) {
+		if v, e := strconv.ParseInt(t, 10, 64); e == nil {
+			temps = append(temps, v)
 		}
 	}
+	if len(temps) > 0 {
+		var sum, max int64
+		max = temps[0]
+		for _, t := range temps {
+			sum += t
+			if t > max {
+				max = t
+			}
+		}
+		// this platform reports whole degrees Celsius directly (not milli-C)
+		result["temp_c_max"] = max
+		result["temp_c_avg"] = roundTo(float64(sum)/float64(len(temps)), 1)
+	}
 
+	if f := strings.Fields(parts[4]); len(f) > 0 {
+		if v, e := strconv.ParseFloat(f[0], 64); e == nil {
+			result["uptime_sec"] = int64(v)
+		}
+	}
 	return result, nil
 }
 
@@ -1250,6 +1376,12 @@ func getNotifyConfig() notifyConfig {
 // device_monitor.sh and command_watcher.sh read it fresh on every cron
 // run, so nothing else needs restarting for a backend switch to take
 // effect.
+var (
+	telegramTokenRe = regexp.MustCompile(`^[0-9]{5,}:[A-Za-z0-9_-]{20,}$`)
+	telegramChatRe  = regexp.MustCompile(`^-?[0-9]{3,}$`)
+	ntfyTopicRe     = regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`)
+)
+
 func setNotifyConfig(backend string, telegramBotToken, telegramChatID *string, smsForward *bool) (notifyConfig, error) {
 	if backend != "ntfy" && backend != "telegram" {
 		return notifyConfig{}, routerErrf(`Unknown notification backend: %q (expected "ntfy" or "telegram")`, backend)
@@ -1267,8 +1399,25 @@ func setNotifyConfig(backend string, telegramBotToken, telegramChatID *string, s
 	if telegramChatID != nil {
 		chat = *telegramChatID
 	}
-	if backend == "telegram" && tok == "" {
-		return notifyConfig{}, routerErrf("Telegram backend needs a bot token")
+	tok, chat = strings.TrimSpace(tok), strings.TrimSpace(chat)
+	if backend == "telegram" {
+		// notify.conf is sourced by the router's shell scripts, so these
+		// must never carry anything a shell would interpret.
+		if !telegramTokenRe.MatchString(tok) {
+			return notifyConfig{}, routerErrf("That doesn't look like a bot token (it's like 123456789:AAE...)")
+		}
+		if !telegramChatRe.MatchString(chat) {
+			return notifyConfig{}, routerErrf("The chat ID is a number (like 123456789, or -100... for a group)")
+		}
+	}
+	topic := current.NtfyTopic
+	if backend == "ntfy" && !ntfyTopicRe.MatchString(topic) {
+		// first switch to ntfy (e.g. set up with Telegram): make a private topic
+		b := make([]byte, 8)
+		if _, err := rand.Read(b); err != nil {
+			return notifyConfig{}, err
+		}
+		topic = "cpebox-" + hex.EncodeToString(b)
 	}
 	// A backend switch, or new/changed Telegram credentials, means whoever's
 	// on the receiving end hasn't seen the command cheat-sheet before (or is
@@ -1282,13 +1431,18 @@ func setNotifyConfig(backend string, telegramBotToken, telegramChatID *string, s
 		forwardVal = "1"
 	}
 	content := fmt.Sprintf("NOTIFY_BACKEND=%s\nNTFY_TOPIC=%s\nTELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\nSMS_FORWARD=%s\n",
-		backend, current.NtfyTopic, tok, chat, forwardVal)
+		backend, topic, tok, chat, forwardVal)
 	if _, err := run("mkdir -p "+devmonDir, 0); err != nil {
 		return notifyConfig{}, err
 	}
 	b64 := base64.StdEncoding.EncodeToString([]byte(content))
 	if _, err := run(fmt.Sprintf("echo %s | base64 -d > %s && chmod 600 %s", b64, notifyConfFile, notifyConfFile), 0); err != nil {
 		return notifyConfig{}, err
+	}
+	// setup.sh/setup.ps1 reuse these from .env on a re-run, so keep them in
+	// step - otherwise re-running setup would undo a change made here.
+	for k, v := range map[string]string{"NOTIFY_BACKEND": backend, "NTFY_TOPIC": topic, "TELEGRAM_BOT_TOKEN": tok, "TELEGRAM_CHAT_ID": chat} {
+		_ = setEnvValue(k, v)
 	}
 	if sendWelcome {
 		sendNotifyWelcomeMessage()
@@ -1322,6 +1476,7 @@ type deviceEntry struct {
 	Hostname *string `json:"hostname"`
 	Vendor   *string `json:"vendor"`    // best-effort, from the device's MAC - see oui.go
 	MdnsName *string `json:"mdns_name"` // best-effort, only looked up when Hostname is empty - see mdns.go
+	Online   bool    `json:"online"`    // associated with Wi-Fi right now (or wired) - not just an unexpired DHCP lease
 }
 
 type deviceMonitorState struct {
@@ -1331,11 +1486,48 @@ type deviceMonitorState struct {
 }
 
 func getDeviceMonitorState() (deviceMonitorState, error) {
-	leasesRaw, err := run("cat /tmp/dhcp.leases 2>/dev/null || true", 0)
+	// The DHCP lease file lists every address the router has handed out that
+	// hasn't expired yet - it says nothing about whether the device is
+	// actually connected right now. For that we ask trafficd, which is the
+	// router's own live view of Wi-Fi association and wired ARP: assoc=1
+	// means the device is on the air; assoc=0 means the lease is still
+	// valid but the device left. `ip neigh show` catches wired devices
+	// that trafficd doesn't (a laptop on the LAN port); we only count
+	// REACHABLE entries there - STALE means the kernel hasn't confirmed
+	// the neighbour for a while (typical staleness is 30 s, hits several
+	// minutes when the device left ungracefully), and DELAY is the
+	// transient "check in progress" state that flips to STALE if the
+	// answer never comes. Both would inflate the count with ghosts.
+	raw, err := run(`cat /tmp/dhcp.leases 2>/dev/null || true
+echo ---
+ubus call trafficd hw '{"tree":false}' 2>/dev/null
+echo ---
+ip neigh show 2>/dev/null | awk '$5 ~ /^[0-9a-fA-F:]{17}$/ && $6 == "REACHABLE" {print $5}'`, 0)
 	if err != nil {
 		return deviceMonitorState{}, err
 	}
-	var devices []deviceEntry
+	sections := strings.SplitN(raw, "\n---\n", 3)
+	leasesRaw := sections[0]
+	online := map[string]bool{}
+	if len(sections) > 1 {
+		// trafficd hw is a flat map of MAC -> {assoc: 0|1, ...}
+		var hw map[string]struct {
+			Assoc int `json:"assoc"`
+		}
+		if err := json.Unmarshal([]byte(sections[1]), &hw); err == nil {
+			for mac, d := range hw {
+				if d.Assoc == 1 {
+					online[strings.ToUpper(mac)] = true
+				}
+			}
+		}
+	}
+	if len(sections) > 2 {
+		for _, mac := range strings.Fields(sections[2]) {
+			online[strings.ToUpper(mac)] = true
+		}
+	}
+	devices := []deviceEntry{}
 	for _, line := range strings.Split(strings.TrimSpace(leasesRaw), "\n") {
 		if line == "" {
 			continue
@@ -1349,7 +1541,7 @@ func getDeviceMonitorState() (deviceMonitorState, error) {
 				h := parts[3]
 				hostname = &h
 			}
-			entry := deviceEntry{Mac: mac, IP: &ip, Hostname: hostname}
+			entry := deviceEntry{Mac: mac, IP: &ip, Hostname: hostname, Online: online[mac]}
 			if org, ok := macVendor(mac); ok {
 				entry.Vendor = &org
 			}
@@ -1363,7 +1555,7 @@ func getDeviceMonitorState() (deviceMonitorState, error) {
 		return deviceMonitorState{}, err
 	}
 	seen := map[string]bool{}
-	var whitelist []string
+	whitelist := []string{}
 	for _, l := range strings.Split(strings.TrimSpace(whitelistRaw), "\n") {
 		l = strings.ToUpper(strings.TrimSpace(l))
 		if l != "" && !seen[l] {
@@ -1437,6 +1629,11 @@ func setRootPassword(newPassword string) error {
 	if len(newPassword) < 4 {
 		return routerErrf("Password should be at least 4 characters")
 	}
+	for _, c := range newPassword {
+		if c < 0x20 || c == 0x7f {
+			return routerErrf("The password can't contain line breaks or control characters")
+		}
+	}
 	salt, err := randomSalt(8)
 	if err != nil {
 		return routerErrf("Could not generate a salt: %v", err)
@@ -1466,42 +1663,67 @@ func setRootPassword(newPassword string) error {
 
 // ----------------------------------------------------------- Data usage ---
 
+// getDataUsage reports today's and this-month's cellular usage - the
+// mobile.flowstat.daily_usage / monthly_usage counters the modem keeps
+// itself, which are the only totals on this SoC that catch traffic the
+// hardware flow-offload path would otherwise hide from the kernel and
+// from trafficd. Both are single totals (no rx/tx split from the modem),
+// so to break them down we borrow the ratio from trafficd's WAN rx/tx
+// byte totals - trafficd itself is HW-offload-blind so its absolute
+// numbers can't be trusted, but the ratio between them is a fair proxy
+// for how this line splits download vs upload over the router's lifetime.
+// Current rx/tx rate is trafficd's live counter directly.
 func getDataUsage() (map[string]any, error) {
-	raw, err := run(`IFACE=$(uci -q get network.wan_2.ifname 2>/dev/null || true)
-[ -z "$IFACE" ] && IFACE=$(uci -q get network.wan_2.device 2>/dev/null || true)
-[ -z "$IFACE" ] && [ -d /sys/class/net/wwan0 ] && IFACE=wwan0
-[ -z "$IFACE" ] && [ -d /sys/class/net/rmnet_data0 ] && IFACE=rmnet_data0
-[ -z "$IFACE" ] && [ -d /sys/class/net/usb0 ] && IFACE=usb0
-if [ -z "$IFACE" ]; then echo "ERR:no_interface"; exit 0; fi
-echo "IFACE=$IFACE"
-echo "RX=$(cat /sys/class/net/$IFACE/statistics/rx_bytes 2>/dev/null || echo 0)"
-echo "TX=$(cat /sys/class/net/$IFACE/statistics/tx_bytes 2>/dev/null || echo 0)"`, 10*time.Second)
+	raw, err := run(`ubus call trafficd wan
+echo "DAY=$(uci -q get mobile.flowstat.daily_usage)"
+echo "MONTH=$(uci -q get mobile.flowstat.monthly_usage)"
+echo "EDAY=$(uci -q get mobile.flowstat.effective_day)"`, 10*time.Second)
 	if err != nil {
 		return nil, err
 	}
-	if strings.Contains(raw, "ERR:no_interface") {
-		return nil, routerErrf("Could not find cellular WAN interface")
-	}
-
-	var iface string
-	var rx, tx int64
+	shell := &strings.Builder{}
+	jsonPart := &strings.Builder{}
 	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "IFACE=") {
-			iface = line[6:]
-		} else if strings.HasPrefix(line, "RX=") {
-			rx, _ = strconv.ParseInt(line[3:], 10, 64)
-		} else if strings.HasPrefix(line, "TX=") {
-			tx, _ = strconv.ParseInt(line[3:], 10, 64)
+		if strings.HasPrefix(line, "DAY=") || strings.HasPrefix(line, "MONTH=") || strings.HasPrefix(line, "EDAY=") {
+			shell.WriteString(line)
+			shell.WriteByte('\n')
+		} else {
+			jsonPart.WriteString(line)
+			jsonPart.WriteByte('\n')
 		}
 	}
-
-	return map[string]any{
-		"interface": iface,
-		"rx":        rx,
-		"tx":        tx,
-		"total":     rx + tx,
-	}, nil
+	v := parseConf(shell.String())
+	num := func(k string) int64 { n, _ := strconv.ParseInt(v[k], 10, 64); return n }
+	var wan struct {
+		RxBytes int64 `json:"rx_bytes"`
+		TxBytes int64 `json:"tx_bytes"`
+		RxRate  int64 `json:"rx_rate"`
+		TxRate  int64 `json:"tx_rate"`
+	}
+	_ = json.Unmarshal([]byte(jsonPart.String()), &wan)
+	rxRatio := 0.8 // sensible default before trafficd has seen any bytes
+	if sum := wan.RxBytes + wan.TxBytes; sum > 0 {
+		rxRatio = float64(wan.RxBytes) / float64(sum)
+	}
+	out := map[string]any{}
+	if v["DAY"] != "" {
+		total := num("DAY")
+		rx := int64(float64(total) * rxRatio)
+		out["today"] = total
+		out["today_rx"], out["today_tx"] = rx, total-rx
+	}
+	if v["MONTH"] != "" {
+		total := num("MONTH")
+		rx := int64(float64(total) * rxRatio)
+		out["month"] = total
+		out["month_rx"], out["month_tx"] = rx, total-rx
+		out["month_start_day"] = num("EDAY")
+	}
+	out["rx_rate"], out["tx_rate"] = wan.RxRate, wan.TxRate
+	if v["DAY"] == "" && v["MONTH"] == "" {
+		return nil, routerErrf("No data usage counters found on the router")
+	}
+	return out, nil
 }
 
 // --------------------------------------------------------------- Raw exec ---
@@ -1510,4 +1732,39 @@ echo "TX=$(cat /sys/class/net/$IFACE/statistics/tx_bytes 2>/dev/null || echo 0)"
 // with care.
 func rawShell(cmd string) (string, error) {
 	return run(cmd, 30*time.Second)
+}
+
+// -------------------------------------------------------------- AT modem ---
+
+var atCmdRe = regexp.MustCompile(`^AT[A-Za-z0-9+\-*_=,.?"@#$%&()!/ :;]{0,255}$`)
+
+// sendAT sends one AT command to the Quectel modem over /dev/ttyUSB2 and
+// returns everything the modem prints back (the echoed command, the
+// unsolicited response lines, the final "OK"/"ERROR"), same shape the
+// stock at_cmd.sh gets. Follows exactly the microcom pattern the stock
+// firmware itself uses, so the modem-daemon side of things is untouched.
+func sendAT(cmd string, wait time.Duration) (string, error) {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" {
+		return "", routerErrf("Empty AT command")
+	}
+	if !atCmdRe.MatchString(cmd) {
+		return "", routerErrf("AT commands must start with AT and contain only ASCII")
+	}
+	// Guard the shell side: pass the command via env, not interpolation.
+	// microcom -t is milliseconds; give the modem a bit longer than wait so
+	// we don't clip a slow reply, then kill in case it drops nothing at all.
+	ms := int(wait / time.Millisecond)
+	if ms < 500 {
+		ms = 500
+	}
+	script := fmt.Sprintf(`AT="$1"; rm -f /tmp/cpe_at_out
+( printf '%%s\r' "$AT" | busybox microcom -t %d /dev/ttyUSB2 > /tmp/cpe_at_out ) &
+p=$!; sleep %d; kill $p 2>/dev/null; wait 2>/dev/null
+cat /tmp/cpe_at_out
+rm -f /tmp/cpe_at_out`, ms+300, (ms/1000)+1)
+	// run() shells through ssh; pass the command as a positional arg via sh -s.
+	quoted := strings.ReplaceAll(cmd, `'`, `'\''`)
+	full := fmt.Sprintf(`sh -c '%s' _ '%s'`, strings.ReplaceAll(script, `'`, `'\''`), quoted)
+	return run(full, wait+5*time.Second)
 }

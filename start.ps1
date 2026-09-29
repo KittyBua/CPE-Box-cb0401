@@ -18,13 +18,19 @@ $RouterIp = if ($env:ROUTER_IP) { $env:ROUTER_IP } else { '192.168.31.1' }
 $KeyPath = Join-Path $PSScriptRoot 'gui\router_key'
 $SshOpts = @('-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'HostKeyAlgorithms=+ssh-rsa', '-o', 'PubkeyAcceptedAlgorithms=+ssh-rsa', '-o', 'ConnectTimeout=5', '-o', 'BatchMode=yes')
 
-$keyWorks = $false
+# Setup is considered done when BOTH the SSH key still works AND cpe-box's
+# own boot marker lives on the router (mirror of start.sh's behaviour): a
+# naked working key isn't enough - the router's tmpfs /etc gets wiped on
+# factory reset, dropping every patch while the key survives in the local
+# repo. Without this second check start.ps1 would happily skip to
+# start_gui.ps1 and the panel would run half-broken.
+$keyOK = $false
 if (Test-Path $KeyPath) {
-    & ssh @SshOpts -i $KeyPath "root@$RouterIp" true 2>$null
-    $keyWorks = ($LASTEXITCODE -eq 0)
+    & ssh @SshOpts -i $KeyPath "root@$RouterIp" '[ -f /etc/crontabs/patches/boot.sh ]' 2>$null
+    $keyOK = ($LASTEXITCODE -eq 0)
 }
 
-if ($keyWorks) {
+if ($keyOK) {
     & (Join-Path $PSScriptRoot 'gui\start_gui.ps1')
 } else {
     & (Join-Path $PSScriptRoot 'setup.ps1')

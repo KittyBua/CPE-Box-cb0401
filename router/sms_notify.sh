@@ -2,30 +2,29 @@
 #
 # Forwards incoming SMS to your notification backend (ntfy.sh/Telegram).
 #
-# The router's stock SMS handling (/usr/sbin/mobile) is compiled/encrypted
-# Lua we can't hook into directly, and there's no hotplug/ubus event for
-# "new SMS" the way dnsmasq gives us one for DHCP leases (see
-# dhcp_notify.sh) - so this polls, unlike that one. It's kept cheap enough
-# not to matter: every few seconds, one ~1.7MB static binary (sms-reader,
-# see router/sms-reader/) does a plain read of the small SQLite file the
-# stock daemon already maintains (/data/etc/mobile/xqSMS.db) - no network
-# call, no AT port, nothing that could race with anything else this
-# toolkit does. There's no sqlite3 CLI on this router (and adding one would
-# mean a multi-MB dependency or a foreign binary's libc against this
-# firmware's musl/uClibc userland - see sms-reader's own doc comment for
-# why a tiny purpose-built reader made more sense).
+# Event-driven, nothing runs in between SMS: for every incoming message the
+# stock mobile daemon itself launches /usr/sbin/sms_msg.lua. The root
+# filesystem is read-only, so `--hook` bind-mounts a tiny wrapper
+# (sms_msg_hook.lua) over that path - memory-only, re-applied at boot by
+# boot.sh. The wrapper runs a copy of the stock handler first (which stores
+# the message in /data/etc/mobile/xqSMS.db) and then this script once, which
+# reads the new rows with sms-reader (a small static binary - there's no
+# sqlite3 CLI on this router; see router/sms-reader/) and forwards them.
 #
-# Modes: same --daemon/--ensure/--stop/--restart convention as
-# command_watcher.sh - a persistent loop, a once-a-minute cron watchdog
-# that also revives it after a reboot, one-shot manual use otherwise.
+# Modes:
+#   (none)   forward any SMS newer than the last one forwarded
+#   --seed   mark everything already in the inbox as seen (setup time)
+#   --hook   install the sms_msg.lua wrapper (idempotent)
+#   --unhook remove it again
 #
 DIR=/etc/crontabs/patches
 BIN="$DIR/sms-reader"
 DB=/data/etc/mobile/xqSMS.db
 STATE="$DIR/sms_last_id.txt"
 REPLY_MAP="$DIR/sms_reply_map.txt"
-PIDFILE=/tmp/sms_notify.pid
-POLL_SECONDS=4
+HOOK="$DIR/sms_msg_hook.lua"
+STOCK=/usr/sbin/sms_msg.lua
+STOCK_COPY=/tmp/sms_msg_stock.lua
 
 # shellcheck disable=SC1091
 . "$DIR/notify_common.sh"
@@ -93,53 +92,35 @@ check_once() {
     done
 }
 
-daemon_pid() {
-    [ -f "$PIDFILE" ] || return 1
-    pid=$(cat "$PIDFILE" 2>/dev/null)
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && grep -q sms_notify "/proc/$pid/cmdline" 2>/dev/null || return 1
-    echo "$pid"
+seed() {
+    [ -f "$STATE" ] && return 0
+    [ -x "$BIN" ] && [ -f "$DB" ] || return 0
+    last=$("$BIN" "$DB" 0 2>/dev/null | cut -f 1 | sort -n | tail -n 1)
+    case "$last" in '' | *[!0-9]*) return 0 ;; esac
+    echo "$last" >"$STATE"
 }
 
-run_daemon() {
-    echo $$ >"$PIDFILE"
-    trap 'rm -f "$PIDFILE"; exit 0' TERM INT
-    while :; do
-        check_once
-        sleep "$POLL_SECONDS"
-    done
-}
-
-stop_daemon() {
-    pid=$(daemon_pid) || return 0
-    kill "$pid" 2>/dev/null
-    rm -f "$PIDFILE"
-}
+hooked() { grep -q " $STOCK " /proc/mounts 2>/dev/null; }
 
 case "$1" in
---daemon) run_daemon ;;
---stop) stop_daemon ;;
---restart)
-    stop_daemon
-    sh "$0" --ensure
+--seed) seed ;;
+--hook)
+    [ -f "$HOOK" ] || exit 1
+    hooked && exit 0
+    # Copy the stock handler before covering it, so the wrapper can still
+    # run it. Never re-copy while hooked - that would copy the wrapper.
+    cp "$STOCK" "$STOCK_COPY" && mount --bind "$HOOK" "$STOCK"
     ;;
---ensure)
-    # flock makes the check-then-launch atomic: the cron watchdog and a
-    # just-finished --restart (or two overlapping cron ticks) can both
-    # reach this within the same second, and without a lock both would
-    # see "not running" and each start their own daemon - confirmed live,
-    # this really happens, not just a theoretical race.
-    (
-        flock -n 9 || exit 0
-        daemon_pid >/dev/null && exit 0
-        if command -v setsid >/dev/null 2>&1; then
-            setsid sh "$0" --daemon >/dev/null 2>&1 &
-        else
-            sh "$0" --daemon >/dev/null 2>&1 &
-        fi
-    ) 9>/tmp/sms_notify.lock
+--unhook)
+    hooked && umount "$STOCK"
+    rm -f "$STOCK_COPY"
     ;;
 *)
-    # One-shot poll (manual use / initial baseline seed at setup time).
-    check_once
+    # Two SMS arriving together start two wrappers; take turns so the same
+    # message is never forwarded twice.
+    (
+        flock -w 60 9 || exit 0
+        check_once
+    ) 9>/tmp/sms_notify.lock
     ;;
 esac

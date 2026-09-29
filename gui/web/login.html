@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · CPE Box</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232f6fed'/%3E%3Cpath d='M9 22h3v-4H9zm5.5 0h3v-8h-3zm5.5 0h3V10h-3z' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/assets/app.css?v={{v}}">
+<script>
+  try { if (localStorage.getItem('cpebox-theme') === 'light') document.documentElement.dataset.theme = 'light'; } catch (e) {}
+</script>
+</head>
+<body>
+<div class="login-wrap">
+  <form class="login card" id="f">
+    <div class="logo"><svg viewBox="0 0 24 24"><path d="M4 18h3v-4H4zm6 0h3V9h-3zm6 0h3V5h-3z"/></svg></div>
+    <h1>CPE Box</h1>
+    <p>Sign in with the router's root password - the same one as for SSH.</p>
+    <label class="field">Root password<input id="pw" type="password" autocomplete="current-password" autofocus required></label>
+    <button class="primary" id="go" type="submit">Sign in</button>
+    <div class="msg err" id="err" role="alert" style="margin-top:12px"></div>
+  </form>
+</div>
+<script>
+document.getElementById('f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('go'), err = document.getElementById('err');
+  btn.disabled = true; btn.classList.add('busy'); err.textContent = '';
+  try {
+    const res = await fetch('/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CPE-Box': '1'},
+      body: JSON.stringify({password: document.getElementById('pw').value}),
+    });
+    const j = await res.json();
+    if (j.ok) { location.href = '/'; return; }
+    err.textContent = j.error || 'Sign-in failed';
+  } catch (_) {
+    err.textContent = "Can't reach CPE Box";
+  }
+  btn.disabled = false; btn.classList.remove('busy');
+});
+</script>
+</body>
+</html>

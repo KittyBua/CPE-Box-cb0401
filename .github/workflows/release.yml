@@ -1,0 +1,56 @@
+name: Release
+
+# Every pushed tag vX.Y.Z becomes a GitHub release with prebuilt binaries,
+# which start.sh / setup.sh (and the .ps1 versions) download when Go isn't
+# installed. Run it by hand to (re)build a release for an existing tag.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and publish (e.g. v1.0.0)
+        required: true
+      latest:
+        description: Mark it as the latest release
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Build
+        run: |
+          # build.sh lives at repo root in v1.0+; older tags kept it under gui/.
+          if [ -f build.sh ]; then
+            bash build.sh "$PWD/dist" "$TAG"
+          else
+            bash gui/build.sh "$PWD/dist" "$TAG"
+          fi
+          ls -l dist
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATEST: ${{ github.event_name == 'push' || inputs.latest }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "CPE Box $TAG" --generate-notes --verify-tag --latest="$LATEST"
+          fi
+          gh release upload "$TAG" dist/* --clobber
