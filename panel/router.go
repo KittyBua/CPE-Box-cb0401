@@ -515,6 +515,7 @@ var (
 	copsRe    = regexp.MustCompile(`\+COPS:\s*\d+,\d+,"([^"]*)"`)
 	cpinRe    = regexp.MustCompile(`\+CPIN:\s*([A-Z ]+)`)
 	ceregRe   = regexp.MustCompile(`\+CEREG:\s*\d+,(\d+)`)
+	c5gregRe  = regexp.MustCompile(`\+C5GREG:\s*\d+,(\d+)`)
 	qccidRe   = regexp.MustCompile(`\+QCCID:\s*(\w+)`)
 	cnumRe    = regexp.MustCompile(`\+CNUM:\s*[^,]*,"([^"]*)"`)
 	cgcontRe  = regexp.MustCompile(`\+CGDCONT:\s*1,"[^"]*","([^"]*)"`)
@@ -583,6 +584,7 @@ func getCellularInfoViaAT() (map[string]any, error) {
 		`AT+QENG="servingcell"`,
 		"AT+CPIN?",
 		"AT+CEREG?",
+		"AT+C5GREG?",
 		"AT+QCCID",
 		"AT+CNUM",
 		"AT+CGDCONT?",
@@ -633,6 +635,19 @@ func parseATCellular(raw string) map[string]any {
 		case "5":
 			info["registered"] = true
 			info["roaming"] = true
+		}
+	}
+	// 5G SA registers via 5GS registration (C5GREG), not EPS (CEREG); without
+	// this a pure-SA cb0401 v1 reads as "not registered" even when connected.
+	if reg, _ := info["registered"].(bool); !reg {
+		if m := c5gregRe.FindStringSubmatch(raw); m != nil {
+			switch m[1] {
+			case "1":
+				info["registered"] = true
+			case "5":
+				info["registered"] = true
+				info["roaming"] = true
+			}
 		}
 	}
 	if m := qccidRe.FindStringSubmatch(raw); m != nil {
@@ -688,16 +703,47 @@ func parseATCellular(raw string) map[string]any {
 			info["band_5g"] = "n" + f[7]
 		}
 	}
+	// NR5G-SA (no LTE anchor). This firmware reports each RAT on its own +QENG
+	// line — as the NSA capture shows ("servingcell","NOCONN" + a separate
+	// "LTE"/"NR5G-NSA" line) — so try a standalone "NR5G-SA" line first, with
+	// the same field order as the NR5G-NSA leg. Fall back to the combined
+	// "servingcell",<state>,"NR5G-SA",<dup>,<mcc>,<mnc>,<cellID>,<PCI>,<TAC>,
+	// <ARFCN>,<band>,<bw>,<RSRP>,<RSRQ>,<SINR>,... form from the Quectel spec.
+	// Both are best-effort; confirm indices against a live SA unit.
+	if f := qengFields(raw, `"NR5G-SA",`); len(f) >= 8 {
+		info["pci_5g"] = f[2]
+		info["rsrp_5g"] = f[3]
+		info["snr_5g"] = f[4]
+		info["rsrq_5g"] = f[5]
+		if info["band_5g"] == "" {
+			info["band_5g"] = "n" + f[7]
+		}
+		info["level"] = barsFromRSRP(f[3])
+	} else if f := qengFields(raw, `"servingcell",`); len(f) >= 14 && f[1] == "NR5G-SA" {
+		info["pci_5g"] = f[6]
+		info["rsrp_5g"] = f[11]
+		info["rsrq_5g"] = f[12]
+		info["snr_5g"] = f[13]
+		if info["band_5g"] == "" {
+			info["band_5g"] = "n" + f[9]
+		}
+		info["level"] = barsFromRSRP(f[11])
+	}
 
 	// Aggregated CA bands (same helper the daemon path uses), else compose
 	// from the primary/5G legs.
 	if agg := aggregatedBands(); agg != "" {
 		info["band"] = agg
-	} else if bp, _ := info["band_primary"].(string); bp != "" {
-		if b5, _ := info["band_5g"].(string); b5 != "" {
+	} else {
+		bp, _ := info["band_primary"].(string)
+		b5, _ := info["band_5g"].(string)
+		switch {
+		case bp != "" && b5 != "":
 			info["band"] = bp + "+" + b5
-		} else {
+		case bp != "":
 			info["band"] = bp
+		case b5 != "":
+			info["band"] = b5
 		}
 	}
 	return info

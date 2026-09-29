@@ -19,6 +19,9 @@ heading belongs to a version; use `##` for the subsections within it.
 ## What's new since v1.0
 
 - **AT-command fallback for cb0401 v1 firmware.** Some cb0401 v1 units run firmware without the stock mobile-daemon API (`ubus call mobile device` / `dump_status`) the panel normally reads cellular status from. On those, the panel now falls back to talking to the RG520N modem directly over AT commands and reconstructs the same essentials — operator, network type (LTE / 5G NSA), primary + 5G bands, RSRP/RSRQ/RSSI/SNR, PCI, SIM status/number/ICCID and APN — so the Cellular page works the same on both firmware generations. Covered by a parser test against a real captured modem reply.
+- **Standalone-5G (SA) on cb0401 v1.** The AT fallback now also handles a pure-SA connection: registration is read from 5GS registration (`AT+C5GREG?`), not just LTE `AT+CEREG?`, and serving-cell signal/PCI/band are parsed from the `NR5G-SA` `+QENG` line — so an SA-only v1 no longer reads as "not registered" / "no service" with an empty band.
+- **App version in the panel header.** The running CPE Box version is shown next to the title (and stays on the System page), so it's easy to tell which build you're on.
+- **Automatic RSA key fallback in setup.** If the router's dropbear is too old to accept the default ed25519 key, setup regenerates an RSA key and reinstalls it over the same password instead of failing with "key-based login still fails".
 
 ## Repository structure
 

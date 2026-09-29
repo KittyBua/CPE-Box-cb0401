@@ -54,6 +54,62 @@ func TestParseATCellular(t *testing.T) {
 	}
 }
 
+// Synthesized NR5G-SA replies for a cb0401 v1 in standalone 5G (no LTE anchor).
+// Two firmware shapes are covered: a standalone "NR5G-SA" +QENG line (same field
+// order as the NR5G-NSA leg, which is how the real NSA capture reports each RAT),
+// and the combined "servingcell",<state>,"NR5G-SA",... form from the Quectel spec.
+// Common to both: registration comes from C5GREG (CEREG reads not-registered in
+// SA). Field layouts are best-effort — confirm against a live SA unit.
+func atSAHeader() string {
+	return "AT+COPS?\r\n+COPS: 0,0,\"Telekom.de\",13\r\n\r\nOK\r\n" +
+		"AT+QNWINFO\r\n+QNWINFO: \"NR5G-SA\",\"26201\",\"NR5G BAND 78\",633984\r\n\r\nOK\r\n"
+}
+func atSAFooter() string {
+	return "AT+CPIN?\r\n+CPIN: READY\r\n\r\nOK\r\n" +
+		"AT+CEREG?\r\n+CEREG: 0,0\r\n\r\nOK\r\n" +
+		"AT+C5GREG?\r\n+C5GREG: 0,1\r\n\r\nOK\r\n" +
+		"AT+QCCID\r\n+QCCID: 89490200002149039092\r\n\r\nOK\r\n" +
+		"AT+CNUM\r\n+CNUM: ,\"+4917684249486\",145\r\n\r\nOK\r\n" +
+		"AT+CGDCONT?\r\n+CGDCONT: 1,\"IPV4V6\",\"internet\",\"0.0.0.0\",0,0\r\n\r\nOK\r\n"
+}
+
+func checkSA(t *testing.T, info map[string]any) {
+	t.Helper()
+	wantStr := map[string]string{
+		"operator": "Telekom.de", "network_type": "5G SA",
+		"band_5g": "n78", "band_primary": "",
+		"rsrp_5g": "-88", "rsrq_5g": "-11", "snr_5g": "25", "pci_5g": "101",
+		"sim_status": "Ready", "sim_iccid": "89490200002149039092",
+	}
+	for k, want := range wantStr {
+		if got, _ := info[k].(string); got != want {
+			t.Errorf("%s = %q, want %q", k, got, want)
+		}
+	}
+	if info["registered"] != true { // from C5GREG, not CEREG
+		t.Errorf("registered = %v, want true", info["registered"])
+	}
+	if info["level"] != 4 { // rsrp_5g -88 -> 4 bars
+		t.Errorf("level = %v, want 4", info["level"])
+	}
+}
+
+func TestParseATCellularSA_standaloneLine(t *testing.T) {
+	raw := atSAHeader() +
+		"AT+QENG=\"servingcell\"\r\n+QENG: \"servingcell\",\"CONN\"\r\n" +
+		"+QENG: \"NR5G-SA\",262,01,101,-88,25,-11,633984,78,1,0\r\n\r\nOK\r\n" +
+		atSAFooter()
+	checkSA(t, parseATCellular(raw))
+}
+
+func TestParseATCellularSA_combinedLine(t *testing.T) {
+	raw := atSAHeader() +
+		"AT+QENG=\"servingcell\"\r\n" +
+		"+QENG: \"servingcell\",\"CONN\",\"NR5G-SA\",\"TDD\",262,01,12345678,101,ABCD,633984,78,12,-88,-11,25,1,50\r\n\r\nOK\r\n" +
+		atSAFooter()
+	checkSA(t, parseATCellular(raw))
+}
+
 // Real dump_status from the stock daemon on cb0401 v2 (ROM 3.0.57). Signal
 // fields are quoted strings and ci_5g is the "-" placeholder that used to
 // break a json.Number parse — parseDumpStatus (via loose) must handle both.

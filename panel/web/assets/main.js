@@ -18,6 +18,7 @@ on('info', i => {
   if (!i) return;
   $('#model').textContent = ['Xiaomi 5G CPE Pro', i.model, i.firmware ? 'firmware ' + i.firmware : ''].filter(Boolean).join(' · ');
   $('#model').title = 'CPE Box v' + i.version;
+  setText('appver', i.version ? 'v' + i.version : '');
   $('#logoutBtn').hidden = !!i.local;
 });
 

@@ -152,8 +152,23 @@ else
   fi
 fi
 
-ssh "${SSH_OPTS[@]}" -i "$KEY_PATH" -o BatchMode=yes "root@$ROUTER_IP" true \
-  || die "Key-based login still fails after installing the key — check the router's dropbear config."
+if ! ssh "${SSH_OPTS[@]}" -i "$KEY_PATH" -o BatchMode=yes "root@$ROUTER_IP" true 2>/dev/null; then
+  # Older dropbear builds (reported on some cb0401 v1 firmware) reject ed25519
+  # keys, so the key we just installed can't log in. If we still have the
+  # password on hand, regenerate as RSA and reinstall once before giving up —
+  # this is what users were doing by hand (ssh-keygen -t rsa ... router_key).
+  if ssh-keygen -lf "$KEY_PATH" 2>/dev/null | grep -q 'ED25519' \
+     && [ -n "$KNOWN_PASSWORD" ] && command -v sshpass >/dev/null 2>&1; then
+    say "The ed25519 key was rejected — retrying with an RSA key (older dropbear)"
+    rm -f "$KEY_PATH" "$KEY_PATH.pub"
+    ssh-keygen -t rsa -b 2048 -f "$KEY_PATH" -N "" -C "cpe-box-gui" -q
+    RSA_PUBKEY="$(cat "$KEY_PATH.pub")"
+    sshpass -p "$KNOWN_PASSWORD" ssh "${SSH_OPTS[@]}" "root@$ROUTER_IP" \
+      "mkdir -p /etc/dropbear; grep -qF '$RSA_PUBKEY' /etc/dropbear/authorized_keys 2>/dev/null || echo '$RSA_PUBKEY' >> /etc/dropbear/authorized_keys; chmod 600 /etc/dropbear/authorized_keys" 2>/dev/null || true
+  fi
+  ssh "${SSH_OPTS[@]}" -i "$KEY_PATH" -o BatchMode=yes "root@$ROUTER_IP" true 2>/dev/null \
+    || die "Key-based login still fails after installing the key — check the router's dropbear config (an older dropbear without ed25519 support needs an RSA key)."
+fi
 echo "Key-based SSH login confirmed. No more passwords needed from here on."
 
 # /etc/dropbear/authorized_keys sits on this router's ramfs-mounted /etc,
