@@ -176,7 +176,7 @@ bindLedSwitch($('#ovLeds'));
 
 function renderAccess(el, info, prefix) {
   if (!info.name_url && !info.lan_url) {
-    el.innerHTML = `<p class="lead" style="margin:0">Only this computer can open the panel right now: <span class="mono">GUI_BIND</span> in <span class="mono">gui/.env</span> is a local address. Remove that line and restart CPE Box to use it from your phone.</p>`;
+    el.innerHTML = `<p class="lead" style="margin:0">Only this computer can open the panel right now: <span class="mono">GUI_BIND</span> in <span class="mono">panel/.env</span> is a local address. Remove that line and restart CPE Box to use it from your phone.</p>`;
     return;
   }
   const alt = info.name_url ? info.name_url.replace('cpe.box', 'cpe.lan') : '';

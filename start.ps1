@@ -15,7 +15,7 @@ $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 
 $RouterIp = if ($env:ROUTER_IP) { $env:ROUTER_IP } else { '192.168.31.1' }
-$KeyPath = Join-Path $PSScriptRoot 'gui\router_key'
+$KeyPath = Join-Path $PSScriptRoot 'panel\router_key'
 $SshOpts = @('-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'HostKeyAlgorithms=+ssh-rsa', '-o', 'PubkeyAcceptedAlgorithms=+ssh-rsa', '-o', 'ConnectTimeout=5', '-o', 'BatchMode=yes')
 
 # Setup is considered done when BOTH the SSH key still works AND cpe-box's
@@ -31,7 +31,7 @@ if (Test-Path $KeyPath) {
 }
 
 if ($keyOK) {
-    & (Join-Path $PSScriptRoot 'gui\start_gui.ps1')
+    & (Join-Path $PSScriptRoot 'panel\start_gui.ps1')
 } else {
     & (Join-Path $PSScriptRoot 'setup.ps1')
 }

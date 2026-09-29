@@ -14,7 +14,7 @@ set -e
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 ROUTER_IP="${ROUTER_IP:-192.168.31.1}"
-KEY_PATH="gui/router_key"
+KEY_PATH="panel/router_key"
 SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o ConnectTimeout=5 -o BatchMode=yes)
 
 # Setup is considered done when BOTH the SSH key still works AND cpe-box's
@@ -26,7 +26,7 @@ SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o HostKey
 # notification hooks, no SMS reader, no DFS patches).
 if [ -f "$KEY_PATH" ] && ssh "${SSH_OPTS[@]}" -i "$KEY_PATH" "root@$ROUTER_IP" \
     "[ -f /etc/crontabs/patches/boot.sh ]" 2>/dev/null; then
-  exec ./gui/start_gui.sh
+  exec ./panel/start_gui.sh
 else
   exec ./setup.sh
 fi

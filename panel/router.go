@@ -363,19 +363,82 @@ func aggregatedBands() string {
 	return strings.Join(out, "+")
 }
 
-// getCellularInfo pulls the live serving-cell info straight from
-// `ubus call mobile dump_status` — the same source the stock web UI
-// uses.  No AT commands for the base info; ubus returns JSON in one
-// fast call and it's already what the router computed for its own
-// UI, so the values match what you see at router.miwifi.com.  The
-// aggregated band list (which ubus doesn't expose) is fetched via
-// one AT+QCAINFO on top, best-effort — if it fails we fall back to
-// the ubus primary band.
+// getCellularInfo pulls the live serving-cell info from the router's stock
+// modem daemon (`ubus call mobile dump_status`) — the same source the stock
+// web UI uses, so the values match router.miwifi.com and the daemon does the
+// work in one fast JSON call. The aggregated CA band list (which the daemon
+// doesn't expose) is fetched via one AT+QCAINFO on top, best-effort.
+//
+// Older hardware/firmware (e.g. cb0401 v1, ROM 3.0.116) ships a mobile daemon
+// that has no `dump_status` method at all — the call fails with ubus status 3
+// (METHOD_NOT_FOUND), which used to leave the whole cellular card dead and the
+// header stuck on "connecting…". When the daemon path is unavailable we fall
+// back to reading the same information straight from the modem over AT
+// (getCellularInfoViaAT), so those units get a working card too.
 func getCellularInfo() (map[string]any, error) {
-	raw, err := run("ubus call mobile dump_status 2>/dev/null", 10*time.Second)
-	if err != nil {
-		return nil, err
+	raw, derr := run("ubus call mobile dump_status", 10*time.Second)
+	if derr == nil {
+		if info, perr := parseDumpStatus(raw); perr == nil {
+			return info, nil
+		}
 	}
+	// Daemon missing/without dump_status, or JSON we couldn't parse — rebuild
+	// the essentials straight from the modem. Keep the daemon error so that,
+	// if AT also fails, the message names both causes.
+	info, aerr := getCellularInfoViaAT()
+	if aerr != nil {
+		if derr != nil {
+			return nil, routerErrf("mobile daemon unavailable (%v) and AT fallback failed (%v)", derr, aerr)
+		}
+		return nil, aerr
+	}
+	return info, nil
+}
+
+// loose is a JSON scalar a firmware may report as a quoted string ("-77.0"),
+// a bare number (-77.0), a placeholder ("-", "") when it has no value, or
+// null. It stores whatever arrives as a trimmed string and never errors, so
+// one field a given firmware formats differently can't sink the whole parse
+// — a plain string field rejects numbers, and json.Number rejects "-".
+type loose string
+
+func (l *loose) UnmarshalJSON(b []byte) error {
+	s := strings.TrimSpace(string(b))
+	if s == "null" {
+		*l = ""
+		return nil
+	}
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		s = s[1 : len(s)-1]
+	}
+	*l = loose(strings.TrimSpace(s))
+	return nil
+}
+
+func (l loose) String() string { return string(l) }
+
+// simStatusName maps the daemon's numeric SIM status to a label.
+func simStatusName(code int) string {
+	switch code {
+	case 0:
+		return "Absent"
+	case 1:
+		return "Ready"
+	case 2:
+		return "PIN required"
+	case 3:
+		return "PUK required"
+	case 4:
+		return "Error"
+	default:
+		return fmt.Sprintf("code %d", code)
+	}
+}
+
+// parseDumpStatus turns the stock daemon's dump_status JSON into the panel's
+// cellular map. Signal fields use loose so a firmware that reports them as
+// numbers (or "-") parses the same as one that reports quoted strings.
+func parseDumpStatus(raw string) (map[string]any, error) {
 	var parsed struct {
 		SIM struct {
 			Status     int    `json:"status"`
@@ -395,32 +458,24 @@ func getCellularInfo() (map[string]any, error) {
 			CellBand     string `json:"cell_band"`
 			Cell5GBand   string `json:"cell_band_5g"`
 			Level        int    `json:"level"`
-			RSRP         string `json:"rsrp"`
-			RSRQ         string `json:"rsrq"`
-			SNR          string `json:"snr"`
-			RSSI         string `json:"rssi"`
-			RSRP5G       string `json:"rsrp_5g"`
-			RSRQ5G       string `json:"rsrq_5g"`
-			SNR5G        string `json:"snr_5g"`
-			PCI          string `json:"pci"`
-			PCI5G        string `json:"pci_5g"`
+			RSRP         loose  `json:"rsrp"`
+			RSRQ         loose  `json:"rsrq"`
+			SNR          loose  `json:"snr"`
+			RSSI         loose  `json:"rssi"`
+			RSRP5G       loose  `json:"rsrp_5g"`
+			RSRQ5G       loose  `json:"rsrq_5g"`
+			SNR5G        loose  `json:"snr_5g"`
+			PCI          loose  `json:"pci"`
+			PCI5G        loose  `json:"pci_5g"`
 			Roam         int    `json:"roam"`
 		} `json:"status"`
 	}
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 		return nil, routerErrf("Could not parse mobile status: %v", err)
 	}
-	simStatuses := map[int]string{
-		0: "Absent", 1: "Ready", 2: "PIN required",
-		3: "PUK required", 4: "Error",
-	}
-	simStatus := simStatuses[parsed.SIM.Status]
-	if simStatus == "" {
-		simStatus = fmt.Sprintf("code %d", parsed.SIM.Status)
-	}
 	s := parsed.Status
 	// Aggregated CA bands (e.g. "B3+B8+n1+n78") if the modem replies,
-	// otherwise stick with the human-readable primary band from ubus.
+	// otherwise stick with the human-readable primary band from the daemon.
 	band := s.CellBand
 	if agg := aggregatedBands(); agg != "" {
 		band = agg
@@ -433,18 +488,18 @@ func getCellularInfo() (map[string]any, error) {
 		"band_5g":      s.Cell5GBand,
 		"apn":          s.APN,
 		"level":        s.Level,
-		"rsrp":         s.RSRP,
-		"rsrq":         s.RSRQ,
-		"snr":          s.SNR,
-		"rssi":         s.RSSI,
-		"rsrp_5g":      s.RSRP5G,
-		"rsrq_5g":      s.RSRQ5G,
-		"snr_5g":       s.SNR5G,
-		"pci":          s.PCI,
-		"pci_5g":       s.PCI5G,
+		"rsrp":         s.RSRP.String(),
+		"rsrq":         s.RSRQ.String(),
+		"snr":          s.SNR.String(),
+		"rssi":         s.RSSI.String(),
+		"rsrp_5g":      s.RSRP5G.String(),
+		"rsrq_5g":      s.RSRQ5G.String(),
+		"snr_5g":       s.SNR5G.String(),
+		"pci":          s.PCI.String(),
+		"pci_5g":       s.PCI5G.String(),
 		"roaming":      s.Roam != 0,
 		"registered":   s.Registration == 1,
-		"sim_status":   simStatus,
+		"sim_status":   simStatusName(parsed.SIM.Status),
 		"sim_locked":   parsed.SIM.Lock == 1,
 		"sim_pin_left": parsed.SIM.PinRemains,
 		"sim_puk_left": parsed.SIM.PukRemains,
@@ -452,6 +507,200 @@ func getCellularInfo() (map[string]any, error) {
 		"sim_iccid":    parsed.SIM.ICCID,
 		"sim_country":  parsed.SIM.Country,
 	}, nil
+}
+
+// AT parsers for the cellular fallback. Formats confirmed live against the
+// RG520N-EB modem; parsing is index/regex based and tolerant of missing lines.
+var (
+	copsRe    = regexp.MustCompile(`\+COPS:\s*\d+,\d+,"([^"]*)"`)
+	cpinRe    = regexp.MustCompile(`\+CPIN:\s*([A-Z ]+)`)
+	ceregRe   = regexp.MustCompile(`\+CEREG:\s*\d+,(\d+)`)
+	qccidRe   = regexp.MustCompile(`\+QCCID:\s*(\w+)`)
+	cnumRe    = regexp.MustCompile(`\+CNUM:\s*[^,]*,"([^"]*)"`)
+	cgcontRe  = regexp.MustCompile(`\+CGDCONT:\s*1,"[^"]*","([^"]*)"`)
+	qnwinfoRe = regexp.MustCompile(`\+QNWINFO:\s*"([^"]*)","[^"]*","([^"]*)"`)
+	bandNumRe = regexp.MustCompile(`BAND\s+(\d+)`)
+)
+
+// bandLabel turns a QNWINFO band name ("LTE BAND 3") into a short label
+// ("B3" for LTE, "n1" for NR5G).
+func bandLabel(s, prefix string) string {
+	if m := bandNumRe.FindStringSubmatch(s); m != nil {
+		return prefix + m[1]
+	}
+	return ""
+}
+
+// qengFields returns the comma-separated fields that follow tag on a +QENG
+// servingcell line (with surrounding quotes stripped), or nil if the line
+// isn't present.
+func qengFields(raw, tag string) []string {
+	head := "+QENG: " + tag
+	i := strings.Index(raw, head)
+	if i < 0 {
+		return nil
+	}
+	rest := raw[i+len(head):]
+	if nl := strings.IndexAny(rest, "\r\n"); nl >= 0 {
+		rest = rest[:nl]
+	}
+	parts := strings.Split(rest, ",")
+	for j := range parts {
+		parts[j] = strings.Trim(strings.TrimSpace(parts[j]), `"`)
+	}
+	return parts
+}
+
+// barsFromRSRP approximates the daemon's 0–5 signal level from an LTE RSRP.
+func barsFromRSRP(s string) int {
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return 0
+	}
+	switch {
+	case v >= -80:
+		return 5
+	case v >= -90:
+		return 4
+	case v >= -100:
+		return 3
+	case v >= -110:
+		return 2
+	default:
+		return 1
+	}
+}
+
+// getCellularInfoViaAT reconstructs the cellular card from the modem directly,
+// for firmware whose stock daemon has no dump_status. It is best-effort: each
+// field is filled only when its AT command answered, and anything missing is
+// left blank rather than failing the call. This is how the base info was read
+// before it moved onto the daemon, kept alive as a fallback for cb0401 v1.
+func getCellularInfoViaAT() (map[string]any, error) {
+	raw, err := atQuery([]string{
+		"AT+COPS?",
+		"AT+QNWINFO",
+		`AT+QENG="servingcell"`,
+		"AT+CPIN?",
+		"AT+CEREG?",
+		"AT+QCCID",
+		"AT+CNUM",
+		"AT+CGDCONT?",
+	}, 500*time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+	if !strings.Contains(raw, "+") {
+		return nil, routerErrf("modem returned no usable AT data")
+	}
+	return parseATCellular(raw), nil
+}
+
+// parseATCellular builds the cellular map from a raw AT reply block. Split out
+// from getCellularInfoViaAT so it can be tested against captured modem output.
+func parseATCellular(raw string) map[string]any {
+	info := map[string]any{
+		"operator": "", "network_type": "", "band": "", "band_primary": "",
+		"band_5g": "", "apn": "", "level": 0,
+		"rsrp": "", "rsrq": "", "snr": "", "rssi": "",
+		"rsrp_5g": "", "rsrq_5g": "", "snr_5g": "", "pci": "", "pci_5g": "",
+		"roaming": false, "registered": false, "sim_status": "",
+		"sim_locked": false, "sim_pin_left": 0, "sim_puk_left": 0,
+		"sim_number": "", "sim_iccid": "", "sim_country": "",
+	}
+
+	if m := copsRe.FindStringSubmatch(raw); m != nil {
+		info["operator"] = m[1]
+	}
+	if m := cpinRe.FindStringSubmatch(raw); m != nil {
+		switch st := strings.TrimSpace(m[1]); {
+		case st == "READY":
+			info["sim_status"] = "Ready"
+		case strings.Contains(st, "PUK"):
+			info["sim_status"] = "PUK required"
+			info["sim_locked"] = true
+		case strings.Contains(st, "PIN"):
+			info["sim_status"] = "PIN required"
+			info["sim_locked"] = true
+		default:
+			info["sim_status"] = st
+		}
+	}
+	if m := ceregRe.FindStringSubmatch(raw); m != nil {
+		switch m[1] {
+		case "1":
+			info["registered"] = true
+		case "5":
+			info["registered"] = true
+			info["roaming"] = true
+		}
+	}
+	if m := qccidRe.FindStringSubmatch(raw); m != nil {
+		info["sim_iccid"] = m[1]
+	}
+	if m := cnumRe.FindStringSubmatch(raw); m != nil {
+		info["sim_number"] = m[1]
+	}
+	if m := cgcontRe.FindStringSubmatch(raw); m != nil {
+		info["apn"] = m[1]
+	}
+
+	// Network type + per-leg bands from QNWINFO ("FDD LTE" / "FDD NR5G").
+	hasLTE, hasNR := false, false
+	for _, m := range qnwinfoRe.FindAllStringSubmatch(raw, -1) {
+		rat, bandName := m[1], m[2]
+		switch {
+		case strings.Contains(rat, "NR5G"):
+			hasNR = true
+			info["band_5g"] = bandLabel(bandName, "n")
+		case strings.Contains(rat, "LTE"):
+			hasLTE = true
+			info["band_primary"] = bandLabel(bandName, "B")
+		}
+	}
+	switch {
+	case hasLTE && hasNR:
+		info["network_type"] = "5G NSA"
+	case hasNR:
+		info["network_type"] = "5G SA"
+	case hasLTE:
+		info["network_type"] = "LTE"
+	}
+
+	// Signal + PCI from QENG servingcell (LTE anchor and, in NSA, the NR leg).
+	if f := qengFields(raw, `"LTE","`); len(f) >= 14 {
+		info["pci"] = f[4]
+		info["rsrp"] = f[10]
+		info["rsrq"] = f[11]
+		info["rssi"] = f[12]
+		info["snr"] = f[13]
+		if info["band_primary"] == "" {
+			info["band_primary"] = "B" + f[6]
+		}
+		info["level"] = barsFromRSRP(f[10])
+	}
+	if f := qengFields(raw, `"NR5G-NSA",`); len(f) >= 8 {
+		info["pci_5g"] = f[2]
+		info["rsrp_5g"] = f[3]
+		info["snr_5g"] = f[4]
+		info["rsrq_5g"] = f[5]
+		if info["band_5g"] == "" {
+			info["band_5g"] = "n" + f[7]
+		}
+	}
+
+	// Aggregated CA bands (same helper the daemon path uses), else compose
+	// from the primary/5G legs.
+	if agg := aggregatedBands(); agg != "" {
+		info["band"] = agg
+	} else if bp, _ := info["band_primary"].(string); bp != "" {
+		if b5, _ := info["band_5g"].(string); b5 != "" {
+			info["band"] = bp + "+" + b5
+		} else {
+			info["band"] = bp
+		}
+	}
+	return info
 }
 
 // setNr5gMode sets AT+QNWPREFCFG="nr5g_disable_mode":
@@ -513,15 +762,21 @@ func normalizeBandList(s string) (string, error) {
 // same call the stock web UI's setCellularBand makes. The daemon programs
 // the modem over QMI and saves the lists to UCI, and re-applies them on its
 // own every time it starts, so nothing on our side has to re-assert them.
+// This is the preferred path: it keeps the lists persistent across reconnect
+// and reboot for free, and doesn't fight the daemon for the AT port.
 //
-// The daemon returns code -1 while the modem is mid-reconnect (right after a
-// mode change, an APN switch, or on first-boot before it's registered),
-// which is transient - so we retry a few times before giving up.
+// The daemon can return code -1 transiently while the modem is mid-reconnect
+// (right after a mode change, an APN switch, or on first boot before it's
+// registered), so we retry a few times. But on some firmware (cb0401 v1, ROM
+// 3.0.116) the daemon rejects this call outright and -1 never clears - a
+// persistent -1 is not distinguishable from a transient one here, so after a
+// few tries we give up and let setBands fall back to the AT path.
 func applyBandsViaDaemon(lte, sa, nsa string) error {
 	payload, _ := json.Marshal(map[string]string{"method": "set", "lte_band": lte, "sa_band": sa, "nsa_band": nsa})
 	b64 := base64.StdEncoding.EncodeToString(payload)
+	const tries = 3
 	var last string
-	for attempt := 1; attempt <= 5; attempt++ {
+	for attempt := 1; attempt <= tries; attempt++ {
 		out, err := run(fmt.Sprintf(`ubus call mobile device "$(echo %s | base64 -d)"`, b64), 90*time.Second)
 		if err != nil {
 			return err
@@ -533,11 +788,37 @@ func applyBandsViaDaemon(lte, sa, nsa string) error {
 		if json.Unmarshal([]byte(out), &resp) == nil && resp.Code != nil && *resp.Code == 0 {
 			return nil
 		}
-		if attempt < 5 {
+		if attempt < tries {
 			time.Sleep(time.Duration(attempt*2) * time.Second)
 		}
 	}
-	return routerErrf("The modem daemon rejected the band change after 5 tries: %s", last)
+	return routerErrf("the modem daemon rejected the band change after %d tries: %s", tries, last)
+}
+
+// applyBandsViaAT programs the band lists straight into the modem with
+// AT+QNWPREFCFG, for firmware whose stock daemon rejects the ubus band call
+// (cb0401 v1 returns {"code":-1}). It also writes the lists into the daemon's
+// UCI, so if that daemon later re-reads UCI on a reconnect or reboot it
+// re-applies the same bands instead of overwriting them from a stale config.
+// Band lists arrive comma-separated (already validated as plain digits by
+// normalizeBandList); QNWPREFCFG wants them colon-separated.
+func applyBandsViaAT(lte, sa, nsa string) error {
+	raw, err := atQuery([]string{
+		fmt.Sprintf(`AT+QNWPREFCFG="lte_band",%s`, commaToColon(lte)),
+		fmt.Sprintf(`AT+QNWPREFCFG="nr5g_band",%s`, commaToColon(sa)),
+		fmt.Sprintf(`AT+QNWPREFCFG="nsa_nr5g_band",%s`, commaToColon(nsa)),
+	}, 800*time.Millisecond)
+	if err != nil {
+		return err
+	}
+	if strings.Contains(raw, "ERROR") || strings.Count(raw, "OK") < 3 {
+		return routerErrf("the modem did not accept the band lists: %s", strings.TrimSpace(raw))
+	}
+	// Best-effort persistence into the daemon's own config (comma-separated).
+	_, _ = run(fmt.Sprintf(
+		`uci set mobile.device.lte_band='%s'; uci set mobile.device.sa_band='%s'; uci set mobile.device.nsa_band='%s'; uci commit mobile 2>/dev/null; true`,
+		lte, sa, nsa), 10*time.Second)
+	return nil
 }
 
 func setBands(nr5gBand, nsaNr5gBand, lteBand string) (map[string]string, error) {
@@ -557,7 +838,11 @@ func setBands(nr5gBand, nsaNr5gBand, lteBand string) (map[string]string, error) 
 		return nil, routerErrf("Each list needs at least one band (to turn 5G off, use the 5G mode selector instead)")
 	}
 	if err := applyBandsViaDaemon(lte, sa, nsa); err != nil {
-		return nil, err
+		// Older firmware (cb0401 v1) whose stock daemon rejects the ubus band
+		// call - program the modem directly over AT instead.
+		if atErr := applyBandsViaAT(lte, sa, nsa); atErr != nil {
+			return nil, routerErrf("%v; AT fallback also failed: %v", err, atErr)
+		}
 	}
 	return getModemConfig()
 }

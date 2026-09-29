@@ -7,7 +7,7 @@ package main
 //
 // The placeholder committed at embedded/sms-reader-linux-armv7 (empty by
 // default so `go build` works from a fresh clone without cross-building
-// anything first) is replaced with the real ARMv7 binary by gui/build.sh
+// anything first) is replaced with the real ARMv7 binary by build.sh
 // before it kicks off the host builds. isEmbeddedSmsReaderReal tells
 // callers to fall back to a fresh cross-build (setup.sh) when the running
 // binary was built without a real payload.
@@ -37,6 +37,6 @@ func dumpEmbeddedSmsReader(path string) (bool, error) {
 func isEmbeddedSmsReaderReal() bool {
 	// The checked-in placeholder is empty; a real ARMv7 sms-reader built
 	// with CGO_ENABLED=0 -trimpath -ldflags="-s -w" is comfortably above
-	// 100 KiB, so any non-trivial size means gui/build.sh populated it.
+	// 100 KiB, so any non-trivial size means build.sh populated it.
 	return len(embeddedSmsReader) > 4096
 }

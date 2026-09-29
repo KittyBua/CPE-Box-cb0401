@@ -21,7 +21,7 @@ $('#lanForm').addEventListener('submit', e => {
   const f = e.target, ip = f.ip.value.trim();
   if (!ipRe.test(ip)) return toast("That isn't an IPv4 address", 'err');
   if (!/^(192\.168|10\.|172\.(1[6-9]|2\d|3[01]))/.test(ip)) return toast('Use a private address (192.168.x.1, 10.x.x.1 or 172.16-31.x.1)', 'err');
-  if (!confirm(`Change the router's address to ${ip}?\n\nThe router restarts and every device gets a new address. Open the panel at http://cpe.box (or http://${ip.split('.').slice(0, 3).join('.')}.x:7777 on this computer) afterwards. If you run CPE Box on this computer, put ROUTER_IP=${ip} in gui/.env.`)) return;
+  if (!confirm(`Change the router's address to ${ip}?\n\nThe router restarts and every device gets a new address. Open the panel at http://cpe.box (or http://${ip.split('.').slice(0, 3).join('.')}.x:7777 on this computer) afterwards. If you run CPE Box on this computer, put ROUTER_IP=${ip} in panel/.env.`)) return;
   withBusy($('button', f), async () => {
     await stock('lan_ip', { ip, mask: f.mask.value });
     toast('Router address changed - it is restarting');

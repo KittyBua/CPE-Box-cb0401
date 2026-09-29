@@ -21,7 +21,7 @@ import (
 )
 
 // appVersion is overridden at release build time (-ldflags -X main.appVersion=...).
-var appVersion = "1.0.0-dev"
+var appVersion = "1.0.1-dev"
 
 //go:embed web
 var webFS embed.FS
@@ -513,7 +513,7 @@ func main() {
 				os.Exit(1)
 			}
 			if !ok {
-				fmt.Fprintln(os.Stderr, "this cpe-box was built without an embedded sms-reader (empty placeholder). Run gui/build.sh to embed one.")
+				fmt.Fprintln(os.Stderr, "this cpe-box was built without an embedded sms-reader (empty placeholder). Run build.sh to embed one.")
 				os.Exit(1)
 			}
 			return

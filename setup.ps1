@@ -22,7 +22,7 @@
 #   5. Runs router/cleanup.sh on the router to remove telemetry/dead cron
 #      jobs (safe by default — see cleanup.sh's own flags for optional
 #      extras).
-#   6. Builds (if needed) and launches the GUI at gui/.
+#   6. Builds (if needed) and launches the GUI at panel/.
 #
 # Safe to re-run: every step is idempotent.
 #
@@ -32,8 +32,8 @@ $ErrorActionPreference = 'Stop'
 
 $RepoDir = $PSScriptRoot
 $RouterIp = if ($env:ROUTER_IP) { $env:ROUTER_IP } else { '192.168.31.1' }
-$KeyPath = Join-Path $RepoDir 'gui\router_key'
-$EnvFile = Join-Path $RepoDir 'gui\.env'
+$KeyPath = Join-Path $RepoDir 'panel\router_key'
+$EnvFile = Join-Path $RepoDir 'panel\.env'
 
 $SshOpts = @('-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'HostKeyAlgorithms=+ssh-rsa', '-o', 'PubkeyAcceptedAlgorithms=+ssh-rsa', '-o', 'ConnectTimeout=5')
 
@@ -224,10 +224,10 @@ foreach ($f in @('install.sh', 'cleanup.sh', 'notify_common.sh', 'device_monitor
 }
 
 # sms-reader is the ARMv7 SQLite reader that runs ON the router. It ships
-# embedded inside every prebuilt cpe-box binary (see gui/embed_smsreader.go),
+# embedded inside every prebuilt cpe-box binary (see panel/embed_smsreader.go),
 # so Ensure-GuiBin makes it available; Fetch-SmsReader dumps it out. If Go
 # is installed it cross-builds a fresh one instead.
-. (Join-Path $RepoDir 'gui\fetch.ps1')
+. (Join-Path $RepoDir 'panel\fetch.ps1')
 if (-not (Ensure-GuiBin)) { throw "couldn't build or download CPE Box" }
 $smsReaderBin = Fetch-SmsReader $tmpDir
 if (-not $smsReaderBin) {
@@ -295,9 +295,9 @@ Add-Content -Path $EnvFile -Value "GUI_BIND=$keepGuiBind" -Encoding ascii
 if ($keepOther.Count) { Add-Content -Path $EnvFile -Value $keepOther -Encoding ascii }
 
 Say 'Unlocking modem bands and installing the 5G mode hook'
-$guiBin = Join-Path $RepoDir 'gui\cpe-box.exe'
+$guiBin = Join-Path $RepoDir 'panel\cpe-box.exe'
 & $guiBin --provision
 if ($LASTEXITCODE -ne 0) { throw 'band unlock / 5G mode hook setup failed' }
 
 Say 'Setup complete. Starting the GUI...'
-& (Join-Path $RepoDir 'gui\start_gui.ps1')
+& (Join-Path $RepoDir 'panel\start_gui.ps1')

@@ -1,18 +1,18 @@
 # Secrets / generated locally by setup.sh / setup.ps1 — never commit these
-gui/router_key
-gui/router_key.pub
-gui/.env
+panel/router_key
+panel/router_key.pub
+panel/.env
 
 # Go build output
-gui/cpe-box
-gui/cpe-box.exe
-gui/gui
-gui/dist/
+panel/cpe-box
+panel/cpe-box.exe
+panel/panel
+panel/dist/
 router/sms-reader/dist/
 router/sms-reader-arm
 
 # Runtime state — fetch.sh writes the currently-downloaded release tag here
-gui/.release
+panel/.release
 router/sms-reader/dist/
 # motion map floor plan (your own, local)
 /data/

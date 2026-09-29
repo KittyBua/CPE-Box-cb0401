@@ -16,13 +16,13 @@ jobs:
           cache: false
       - name: Go
         run: |
-          cd gui
+          cd panel
           test -z "$(gofmt -l .)" || { gofmt -l .; echo "run gofmt"; exit 1; }
           go vet ./...
           go build ./...
           cd ../router/sms-reader && go vet ./... && GOOS=linux GOARCH=arm GOARM=7 go build ./...
       - name: Frontend
-        run: for f in gui/web/assets/*.js; do node --check "$f"; done
+        run: for f in panel/web/assets/*.js; do node --check "$f"; done
       - name: Shell
         run: |
-          for f in *.sh gui/*.sh router/*.sh bootstrap/*.sh; do bash -n "$f" || sh -n "$f"; done
+          for f in *.sh panel/*.sh router/*.sh bootstrap/*.sh; do bash -n "$f" || sh -n "$f"; done

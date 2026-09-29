@@ -63,7 +63,7 @@ $webPassword = if ($env:WEB_PASSWORD) { $env:WEB_PASSWORD } else { $defaultPassw
 # --- 3. Locate and read the SSH public key ----------------------------------
 
 if (-not $PubKeyFile) {
-    $PubKeyFile = Join-Path $PSScriptRoot '..\gui\router_key.pub'
+    $PubKeyFile = Join-Path $PSScriptRoot '..\panel\router_key.pub'
 }
 if (-not (Test-Path $PubKeyFile)) {
     Die "SSH public key not found at $PubKeyFile. Generate one first: ssh-keygen -t ed25519 -f router_key -N '""' -C cpe-box-gui"

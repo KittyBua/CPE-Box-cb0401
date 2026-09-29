@@ -24,9 +24,9 @@
 #      jobs (safe by default — see cleanup.sh's own flags for optional
 #      extras).
 #   6. Gets the GUI (built from source with Go, otherwise the latest GitHub
-#      release - see gui/fetch.sh), uses it to unlock every band the modem
+#      release - see panel/fetch.sh), uses it to unlock every band the modem
 #      supports and install the 5G mode hook (first run only - see
-#      provisionRouter in gui/router.go), then launches it.
+#      provisionRouter in panel/router.go), then launches it.
 #
 # Safe to re-run: every step is idempotent.
 #
@@ -34,8 +34,8 @@ set -e
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROUTER_IP="${ROUTER_IP:-192.168.31.1}"
-KEY_PATH="$REPO_DIR/gui/router_key"
-ENV_FILE="$REPO_DIR/gui/.env"
+KEY_PATH="$REPO_DIR/panel/router_key"
+ENV_FILE="$REPO_DIR/panel/.env"
 
 SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o ConnectTimeout=5)
 
@@ -130,7 +130,7 @@ else
       echo
       if command -v sshpass >/dev/null 2>&1 && [ -t 0 ]; then
         # Read it here rather than letting ssh prompt, so a password that
-        # works gets remembered in gui/.env below - the GUI's self-heal and
+        # works gets remembered in panel/.env below - the GUI's self-heal and
         # the next setup run need it, and before this fix .env only ever
         # held the placeholder "root", which never matches a changed one.
         KNOWN_PASSWORD=""
@@ -259,13 +259,13 @@ for f in install.sh cleanup.sh notify_common.sh device_monitor.sh dhcp_notify.sh
 done
 
 # sms-reader is the ARMv7 SQLite reader that runs ON the router. It ships
-# embedded inside every prebuilt cpe-box binary (see gui/embed_smsreader.go),
+# embedded inside every prebuilt cpe-box binary (see panel/embed_smsreader.go),
 # so ensure_gui_bin below makes it available; fetch_sms_reader dumps it out.
 # When Go is installed it cross-builds a fresh one instead, so anyone
 # hacking on router/sms-reader/ sees their edits without re-running the
 # whole release pipeline. On the very rare setup where none of that works,
 # SMS forwarding is skipped rather than the whole setup failing.
-. "$REPO_DIR/gui/fetch.sh"
+. "$REPO_DIR/panel/fetch.sh"
 ensure_gui_bin || die "couldn't build or download CPE Box"
 if ! fetch_sms_reader "$TMP_DIR"; then
   echo "NOTE: couldn't extract or build sms-reader (needs Go, or an already-fetched"
@@ -340,8 +340,8 @@ echo "GUI_BIND=${KEEP_GUI_BIND:-0.0.0.0:7777}" >> "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
 say "Unlocking modem bands and installing the 5G mode hook"
-GUI_BIN="$REPO_DIR/gui/cpe-box"
+GUI_BIN="$REPO_DIR/panel/cpe-box"
 "$GUI_BIN" --provision || die "band unlock / 5G mode hook setup failed"
 
 say "Setup complete. Starting the GUI..."
-exec "$REPO_DIR/gui/start_gui.sh"
+exec "$REPO_DIR/panel/start_gui.sh"

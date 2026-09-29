@@ -2,7 +2,7 @@
 # fetch.ps1 - gets the CPE Box binaries on Windows, so running CPE Box
 # doesn't need Go. Dot-sourced by start_gui.ps1 and setup.ps1.
 #
-#   Ensure-GuiBin          -> gui\cpe-box.exe, built from source when Go is
+#   Ensure-GuiBin          -> panel\cpe-box.exe, built from source when Go is
 #                             installed, otherwise the latest GitHub release
 #                             (re-downloaded when a newer one is out).
 #   Fetch-SmsReader $dir   -> $dir\sms-reader for the router (ARMv7).
@@ -76,7 +76,7 @@ function Ensure-GuiBin {
 
 function Fetch-SmsReader($Dir) {
     # First try dumping the sms-reader out of the already-fetched cpe-box
-    # (it ships embedded, see gui/embed_smsreader.go). Fall back to a
+    # (it ships embedded, see panel/embed_smsreader.go). Fall back to a
     # fresh cross-build if Go is present, then to a leftover dist/ copy.
     $out = Join-Path $Dir 'sms-reader'
     $src = Join-Path $FetchDir '..\router\sms-reader'

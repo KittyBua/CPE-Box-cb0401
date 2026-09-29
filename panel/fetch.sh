@@ -3,7 +3,7 @@
 # fetch.sh - gets the CPE Box binaries, so running CPE Box doesn't need Go.
 # Sourced by start_gui.sh and setup.sh.
 #
-#   ensure_gui_bin      -> gui/cpe-box, built from source when Go is installed
+#   ensure_gui_bin      -> panel/cpe-box, built from source when Go is installed
 #                          (so it always matches this checkout), otherwise the
 #                          latest GitHub release (re-downloaded when a newer
 #                          one is out).
@@ -88,7 +88,7 @@ ensure_gui_bin() {
 
 # fetch_sms_reader DIR - leaves DIR/sms-reader (ARMv7 static binary), or
 # returns 1. First tries dumping it out of the already-fetched cpe-box (it
-# ships embedded, see gui/embed_smsreader.go); falls back to a fresh
+# ships embedded, see panel/embed_smsreader.go); falls back to a fresh
 # cross-build if Go is present, and finally to a leftover dist/ copy.
 fetch_sms_reader() {
   local out="$1/sms-reader" src="$_FETCH_DIR/../router/sms-reader" bin="$_FETCH_DIR/cpe-box"

@@ -19,11 +19,11 @@ VERSION="${2:-$(git describe --tags --always 2>/dev/null || echo dev)}"
 VERSION="${VERSION#v}"
 LDFLAGS="-s -w -X main.appVersion=$VERSION"
 
-# Cross-build the router-side sms-reader first and drop it where gui/main.go's
+# Cross-build the router-side sms-reader first and drop it where panel/main.go's
 # //go:embed picks it up. The placeholder committed in git is empty; every
 # host build below embeds this real binary. We restore the placeholder at
 # the end so a "git status" after a build stays clean.
-EMBED="$PWD/gui/embedded/sms-reader-linux-armv7"
+EMBED="$PWD/panel/embedded/sms-reader-linux-armv7"
 echo "==> sms-reader-linux-armv7 (runs on the router, embedded into every host build)"
 rm -f "$EMBED"
 (cd router/sms-reader && CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -trimpath -ldflags="-s -w" -o "$EMBED" .)
@@ -31,7 +31,7 @@ trap 'printf "" > "$EMBED"; echo "(restored empty embed placeholder)"' EXIT
 
 build() {
   echo "==> $3 ($1/$2)"
-  (cd gui && CGO_ENABLED=0 GOOS="$1" GOARCH="$2" go build -trimpath -ldflags="$LDFLAGS" -o "$OUT_DIR/$3" .)
+  (cd panel && CGO_ENABLED=0 GOOS="$1" GOARCH="$2" go build -trimpath -ldflags="$LDFLAGS" -o "$OUT_DIR/$3" .)
 }
 
 build darwin arm64 cpe-box-macos-arm64

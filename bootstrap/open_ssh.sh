@@ -78,7 +78,7 @@ WEB_PASSWORD="${WEB_PASSWORD:-$DEFAULT_PASSWORD}"
 # --- 3. Locate and read the SSH public key ----------------------------------
 
 if [ -z "$PUBKEY_FILE" ]; then
-  PUBKEY_FILE="$(dirname "${BASH_SOURCE[0]}")/../gui/router_key.pub"
+  PUBKEY_FILE="$(dirname "${BASH_SOURCE[0]}")/../panel/router_key.pub"
 fi
 [ -f "$PUBKEY_FILE" ] || die "SSH public key not found at $PUBKEY_FILE. Generate one first: ssh-keygen -t ed25519 -f router_key -N '' -C cpe-box-gui"
 PUBKEY="$(cat "$PUBKEY_FILE")"
