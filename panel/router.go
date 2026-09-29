@@ -350,6 +350,13 @@ func aggregatedBands() string {
 	var out []string
 	seen := map[string]bool{}
 	for _, m := range qcaBandRe.FindAllStringSubmatch(raw, -1) {
+		if m[2] == "0" {
+			// No band 0 exists; some cb0401 v1 firmware reports it as a
+			// placeholder on a weak/NOCONN SA carrier, which used to surface
+			// as a bogus "n0" in the Carriers row. Skip it and let the caller
+			// fall back to the band from QNWINFO/QENG.
+			continue
+		}
 		prefix := "B"
 		if m[1] == "NR5G" {
 			prefix = "n"

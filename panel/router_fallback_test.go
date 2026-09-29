@@ -102,12 +102,31 @@ func TestParseATCellularSA_standaloneLine(t *testing.T) {
 	checkSA(t, parseATCellular(raw))
 }
 
-func TestParseATCellularSA_combinedLine(t *testing.T) {
-	raw := atSAHeader() +
+// Real NR5G-SA capture from a cb0401 v1 (issue #1): combined "servingcell"
+// line, and note the serving state reads NOCONN while C5GREG shows registered.
+// Also guards that band comes out n78 (not the bogus "n0" a placeholder QCAINFO
+// band 0 produced) via the band_5g fallback when there is no LTE anchor.
+func TestParseATCellularSA_realV1(t *testing.T) {
+	raw := "AT+QNWINFO\r\n+QNWINFO: \"TDD NR5G\",\"20201\",\"NR5G BAND 78\",634080\r\n\r\nOK\r\n" +
 		"AT+QENG=\"servingcell\"\r\n" +
-		"+QENG: \"servingcell\",\"CONN\",\"NR5G-SA\",\"TDD\",262,01,12345678,101,ABCD,633984,78,12,-88,-11,25,1,50\r\n\r\nOK\r\n" +
-		atSAFooter()
-	checkSA(t, parseATCellular(raw))
+		"+QENG: \"servingcell\",\"NOCONN\",\"NR5G-SA\",\"TDD\", 202,01,12AA54086,262,15EC,634080,78,12,-104,-14,19,1,-\r\n\r\nOK\r\n" +
+		"AT+C5GREG?\r\n+C5GREG: 0,1\r\n\r\nOK\r\n"
+	info := parseATCellular(raw)
+	want := map[string]string{
+		"network_type": "5G SA", "band_5g": "n78", "band": "n78",
+		"pci_5g": "262", "rsrp_5g": "-104", "rsrq_5g": "-14", "snr_5g": "19",
+	}
+	for k, v := range want {
+		if got, _ := info[k].(string); got != v {
+			t.Errorf("%s = %q, want %q", k, got, v)
+		}
+	}
+	if info["registered"] != true { // from C5GREG, not CEREG
+		t.Errorf("registered = %v, want true", info["registered"])
+	}
+	if info["level"] != 2 { // rsrp_5g -104 -> 2 bars
+		t.Errorf("level = %v, want 2", info["level"])
+	}
 }
 
 // Real dump_status from the stock daemon on cb0401 v2 (ROM 3.0.57). Signal
