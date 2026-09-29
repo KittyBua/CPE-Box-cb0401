@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-const appVersion = "0.3.2"
+const appVersion = "0.3.3"
 
 //go:embed templates/index.html
 var templatesFS embed.FS
@@ -157,15 +157,6 @@ func handleSpoofVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ok(w, map[string]string{"reported": reported})
-}
-
-func handleUnlock5GBands(w http.ResponseWriter, r *http.Request) {
-	result, err := unlock5GBands()
-	if err != nil {
-		errResp(w, err)
-		return
-	}
-	ok(w, map[string]string{"result": result})
 }
 
 func handleSetRootPassword(w http.ResponseWriter, r *http.Request) {
@@ -354,6 +345,22 @@ func main() {
 	telegramTokenEnv = getenv("TELEGRAM_BOT_TOKEN", telegramTokenEnv)
 	telegramChatEnv = getenv("TELEGRAM_CHAT_ID", telegramChatEnv)
 
+	if len(os.Args) > 1 && os.Args[1] == "--provision" {
+		if err := provisionRouter(); err != nil {
+			log.Fatalf("provision: %v", err)
+		}
+		return
+	}
+
+	// Routers set up by earlier versions have a hook that re-wrote the 5G
+	// bands over AT on every reconnect; hand those bands to the stock daemon
+	// and swap in the mode-only hook. No-op everywhere else.
+	go func() {
+		if err := migrateLegacyBandHook(); err != nil {
+			log.Printf("legacy band hook migration: %v", err)
+		}
+	}()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleIndex)
 	mux.HandleFunc("/api/status", handleStatus)
@@ -364,7 +371,6 @@ func main() {
 	mux.HandleFunc("/api/ssh-info", handleSSHInfo)
 	mux.HandleFunc("/api/reboot", requireMethod(http.MethodPost, handleReboot))
 	mux.HandleFunc("/api/spoof-version", requireMethod(http.MethodPost, handleSpoofVersion))
-	mux.HandleFunc("/api/unlock-5g-bands", requireMethod(http.MethodPost, handleUnlock5GBands))
 	mux.HandleFunc("/api/root-password", requireMethod(http.MethodPost, handleSetRootPassword))
 	mux.HandleFunc("/api/wifi-scan", handleWifiScan)
 	mux.HandleFunc("/api/system-health", handleSystemHealth)

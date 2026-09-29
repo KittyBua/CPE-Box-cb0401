@@ -23,7 +23,9 @@
 #   5. Runs router/cleanup.sh on the router to remove telemetry/dead cron
 #      jobs (safe by default — see cleanup.sh's own flags for optional
 #      extras).
-#   6. Builds (if needed) and launches the GUI at gui/.
+#   6. Builds the GUI at gui/, uses it to unlock every band the modem
+#      supports and install the 5G mode hook (first run only - see
+#      provisionRouter in gui/router.go), then launches it.
 #
 # Safe to re-run: every step is idempotent.
 #
@@ -354,6 +356,11 @@ say "Setting up the local GUI"
 if [ -z "${KNOWN_PASSWORD:-}" ] && [ -f "$ENV_FILE" ] && grep -q '^ROUTER_ROOT_PASSWORD=' "$ENV_FILE"; then
   KNOWN_PASSWORD="$(grep '^ROUTER_ROOT_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)"
 fi
+# Same for an opt-in LAN bind (see README) - don't silently drop it.
+KEEP_GUI_BIND=""
+if [ -f "$ENV_FILE" ] && grep -q '^GUI_BIND=' "$ENV_FILE"; then
+  KEEP_GUI_BIND="$(grep '^GUI_BIND=' "$ENV_FILE" | cut -d= -f2-)"
+fi
 cat > "$ENV_FILE" <<EOF
 ROUTER_IP=$ROUTER_IP
 ROUTER_ROOT_PASSWORD=${KNOWN_PASSWORD:-root}
@@ -362,7 +369,16 @@ NTFY_TOPIC=$NTFY_TOPIC
 TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN
 TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID
 EOF
+[ -n "$KEEP_GUI_BIND" ] && echo "GUI_BIND=$KEEP_GUI_BIND" >> "$ENV_FILE"
 chmod 600 "$ENV_FILE"
+
+say "Unlocking modem bands and installing the 5G mode hook"
+GUI_BIN="$REPO_DIR/gui/cb0401-tune-control"
+if command -v go >/dev/null 2>&1; then
+  (cd "$REPO_DIR/gui" && go build -o "$GUI_BIN" .) || die "building the GUI failed"
+fi
+[ -x "$GUI_BIN" ] || die "no GUI binary at $GUI_BIN (install Go, or copy a prebuilt one there - see gui/build.sh)"
+"$GUI_BIN" --provision || die "band unlock / 5G mode hook setup failed"
 
 say "Setup complete. Starting the GUI..."
 exec "$REPO_DIR/gui/start_gui.sh"

@@ -218,49 +218,55 @@ const atPort = "/dev/ttyUSB2"
 
 var atCommandQuoteRe = regexp.MustCompile("'")
 
-// atMutex serializes AT queries so two concurrent /api/* handlers (e.g.
-// the periodic /api/status alongside /api/cellular-info) never step on
-// each other by both writing to /dev/ttyUSB2 or both reading the shared
-// /tmp/at_resp.txt at the same time - that would garble both replies.
+// atMutex serializes AT queries from this process; the lock microcom
+// takes (below) additionally keeps them from interleaving with the stock
+// mobile daemon, which polls the same port.
 var atMutex sync.Mutex
 
-// atQuery sends a list of AT commands SEQUENTIALLY within one SSH session.
-//
-// This mirrors a fair amount of trial and error against the real modem:
-// rapid repeated opens of /dev/ttyUSB2 without proper draining leave stale
-// responses from earlier commands "leaking" into later reads, so this
-// kills stray readers, drains the port, and syncs with a bare AT ping
-// before sending the real command(s).
+// atQuery sends AT commands through busybox microcom - exactly how the
+// stock firmware's own /usr/sbin/at_cmd.sh talks to the modem. microcom
+// holds /var/lock/LCK..ttyUSB2 while it runs, and the stock mobile daemon
+// polls this same port (AT+QCAINFO every few seconds) via that script, so
+// going through the lock is what keeps the two from garbling each other's
+// replies. Writing straight to the tty with a background `cat` reader, as
+// this used to, raced with the daemon and produced the intermittent
+// empty/partial readbacks. microcom never exits by itself while the port
+// stays busy, so it's killed once the replies have had time to arrive.
 func atQuery(commands []string, wait time.Duration) (string, error) {
 	atMutex.Lock()
 	defer atMutex.Unlock()
-	waitSec := wait.Seconds()
-	parts := []string{
-		fmt.Sprintf(`for p in $(ps w | grep '[c]at %s' | awk '{print $1}'); do kill -9 $p 2>/dev/null; done`, atPort),
-		fmt.Sprintf(`for i in 1 2 3 4 5 6 7 8; do [ -z "$(ps w | grep '[c]at %s')" ] && break; sleep 0.25; done`, atPort),
-		fmt.Sprintf(`cat %s > /dev/null & FLUSHPID=$!`, atPort),
-		`sleep 1.5`,
-		`kill $FLUSHPID 2>/dev/null`,
-		`rm -f /tmp/at_sync.txt`,
-		fmt.Sprintf(`cat %s > /tmp/at_sync.txt & SYNCPID=$!`, atPort),
-		fmt.Sprintf(`printf 'AT\r' > %s`, atPort),
-		`sleep 1.5`,
-		`kill $SYNCPID 2>/dev/null`,
-		`rm -f /tmp/at_resp.txt`,
-		fmt.Sprintf(`cat %s > /tmp/at_resp.txt & CATPID=$!`, atPort),
-		`sleep 0.4`,
-	}
+	var feed []string
 	for _, c := range commands {
 		if atCommandQuoteRe.MatchString(c) {
 			return "", fmt.Errorf("AT command can't contain a single quote: %q", c)
 		}
-		parts = append(parts, fmt.Sprintf(`printf '%s\r' > %s`, c, atPort))
-		parts = append(parts, fmt.Sprintf(`sleep %g`, waitSec))
+		feed = append(feed, fmt.Sprintf(`printf '%s\r'; usleep %d`, c, wait.Microseconds()))
 	}
-	parts = append(parts, `kill $CATPID 2>/dev/null`, `cat /tmp/at_resp.txt`)
-	cmd := strings.Join(parts, " ; ")
-	timeout := time.Duration(15+float64(len(commands))*waitSec) * time.Second
-	return run(cmd, timeout)
+	total := time.Duration(len(commands))*wait + 500*time.Millisecond
+	script := fmt.Sprintf(`L=/var/lock/LCK..ttyUSB2; O=/tmp/cb0401_at.$$
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  [ -e $L ] || break
+  OWNER=$(tr -d ' \n' < $L 2>/dev/null)
+  [ -n "$OWNER" ] && ! kill -0 "$OWNER" 2>/dev/null && rm -f $L && break
+  usleep 250000
+done
+( %s ) | busybox microcom %s > $O 2>&1 & P=$!
+usleep %d
+kill $P 2>/dev/null; wait $P 2>/dev/null
+cat $O; rm -f $O`, strings.Join(feed, "; "), atPort, total.Microseconds())
+	var out string
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		out, err = run(script, 20*time.Second+total)
+		if err != nil {
+			return "", err
+		}
+		if !strings.Contains(out, "can't create") {
+			return out, nil
+		}
+		time.Sleep(time.Second)
+	}
+	return "", routerErrf("Modem AT port stayed busy, try again")
 }
 
 var qnwprefcfgRe = regexp.MustCompile(`\+QNWPREFCFG:\s*"([a-zA-Z0-9_]+)",\s*([^\r\n]+)`)
@@ -273,39 +279,59 @@ func parseQnwprefcfg(raw string) map[string]string {
 	return out
 }
 
+// modemBandSupport lists the bands a given modem model can actually use,
+// keyed by the prefix of its firmware version string. Measured on the
+// device itself: writing a superset of every band to the modem and reading
+// back ue_capability_band, which the modem reports as (configured bands) ∩
+// (bands the hardware supports).
+var modemBandSupport = map[string]struct{ lte, nr string }{
+	"RG520NEB": {"1,3,7,8,20,28,32,38,42,43", "1,3,7,8,20,28,38,75,76,77,78"},
+}
+
+func commaToColon(s string) string { return strings.ReplaceAll(strings.TrimSpace(s), ",", ":") }
+
+func readUciBands() (map[string]string, error) {
+	raw, err := run(`echo "LTE=$(uci -q get mobile.device.lte_band)"; echo "SA=$(uci -q get mobile.device.sa_band)"; echo "NSA=$(uci -q get mobile.device.nsa_band)"; echo "MODEL=$(uci -q get mobile.device.version)"`, 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	return parseConf(raw), nil
+}
+
+// getModemConfig returns the band configuration the way the stock mobile
+// daemon holds it (UCI mobile.device.*, persisted in /data/etc/config/mobile).
+// That is the real setting: the daemon re-programs the modem from it every
+// time it starts, including on every boot, overriding anything written to
+// the modem directly. Alongside it: what the modem effectively advertises
+// right now (ue_capability_band = configured ∩ hardware-supported), the
+// SA/NSA mode, and the model's supported bands when known.
 func getModemConfig() (map[string]string, error) {
-	cfg := map[string]string{}
-	var lastErr error
-	for attempt := 0; attempt < 4; attempt++ {
-		raw, err := atQuery([]string{`AT+QNWPREFCFG="ue_capability_band"`}, 3500*time.Millisecond)
-		if err != nil {
-			lastErr = err
-		} else {
-			cfg = parseQnwprefcfg(raw)
-			// Full set is 4 keys (gw_band/lte_band/nsa_nr5g_band/nr5g_band).
-			// Fewer than that means the modem hasn't finished replying yet
-			// - treat that as a failure too and retry.
-			if len(cfg) >= 4 {
-				break
+	u, err := readUciBands()
+	if err != nil {
+		return nil, err
+	}
+	cfg := map[string]string{
+		"lte_band":      commaToColon(u["LTE"]),
+		"nr5g_band":     commaToColon(u["SA"]),
+		"nsa_nr5g_band": commaToColon(u["NSA"]),
+		"modem_model":   u["MODEL"],
+	}
+	for prefix, sup := range modemBandSupport {
+		if strings.HasPrefix(u["MODEL"], prefix) {
+			cfg["hw_lte_band"] = commaToColon(sup.lte)
+			cfg["hw_nr5g_band"] = commaToColon(sup.nr)
+		}
+	}
+	if raw, err := atQuery([]string{`AT+QNWPREFCFG="ue_capability_band"`, `AT+QNWPREFCFG="nr5g_disable_mode"`}, 1200*time.Millisecond); err == nil {
+		p := parseQnwprefcfg(raw)
+		for _, k := range []string{"lte_band", "nr5g_band", "nsa_nr5g_band"} {
+			if v, ok := p[k]; ok {
+				cfg["effective_"+k] = v
 			}
 		}
-		time.Sleep(time.Duration(1500+attempt*1000) * time.Millisecond)
-	}
-	if len(cfg) == 0 && lastErr != nil {
-		return nil, lastErr
-	}
-	for attempt := 0; attempt < 4; attempt++ {
-		raw2, err := atQuery([]string{`AT+QNWPREFCFG="nr5g_disable_mode"`}, 1500*time.Millisecond)
-		if err == nil {
-			parsed2 := parseQnwprefcfg(raw2)
-			if len(parsed2) > 0 {
-				for k, v := range parsed2 {
-					cfg[k] = v
-				}
-				break
-			}
+		if v, ok := p["nr5g_disable_mode"]; ok {
+			cfg["nr5g_disable_mode"] = v
 		}
-		time.Sleep(time.Duration(1500+attempt*1000) * time.Millisecond)
 	}
 	return cfg, nil
 }
@@ -422,54 +448,94 @@ func getCellularInfo() (map[string]any, error) {
 //   1 = SA disabled (NSA/LTE only)
 //   2 = NSA disabled (force SA only)
 //   3 = all NR5G disabled (LTE only)
+// The stock daemon doesn't manage this setting at all (it lives in the
+// modem's NV), so the only thing needed to keep it is the mode hook, which
+// re-asserts it on every wan_2 ifup in case anything resets it.
 func setNr5gMode(mode int) (map[string]string, error) {
 	if mode < 0 || mode > 3 {
 		return nil, fmt.Errorf("invalid nr5g_disable_mode %d (0-3)", mode)
 	}
-	if _, err := atQuery([]string{fmt.Sprintf(`AT+QNWPREFCFG="nr5g_disable_mode",%d`, mode)}, 1500*time.Millisecond); err != nil {
-		return nil, err
-	}
-	_ = updateModePrefs(mode)
-	return getModemConfig()
-}
-
-type bandRequest struct {
-	key, value string
-}
-
-// setBands writes the requested bands then does ONE reliable readback to
-// verify - see atQuery's doc comment; checking immediately after a single
-// SET is unreliable on this modem (it can echo back a fragment of an
-// earlier command's reply even when the SET itself worked).
-func setBands(nr5gBand, nsaNr5gBand, lteBand string) (map[string]string, error) {
-	var todo []bandRequest
-	if nr5gBand != "" {
-		todo = append(todo, bandRequest{"nr5g_band", nr5gBand})
-	}
-	if nsaNr5gBand != "" {
-		todo = append(todo, bandRequest{"nsa_nr5g_band", nsaNr5gBand})
-	}
-	if lteBand != "" {
-		todo = append(todo, bandRequest{"lte_band", lteBand})
-	}
-	if len(todo) == 0 {
-		return getModemConfig()
-	}
-
-	for _, req := range todo {
-		if _, err := atQuery([]string{fmt.Sprintf(`AT+QNWPREFCFG="%s",%s`, req.key, req.value)}, 2*time.Second); err != nil {
-			return nil, err
-		}
-		time.Sleep(2 * time.Second)
-	}
-
-	final, err := getModemConfig()
+	raw, err := atQuery([]string{fmt.Sprintf(`AT+QNWPREFCFG="nr5g_disable_mode",%d`, mode)}, 1500*time.Millisecond)
 	if err != nil {
 		return nil, err
 	}
-	nr5gMode, _ := strconv.Atoi(final["nr5g_disable_mode"])
-	_ = updateBandPrefs(final["nr5g_band"], final["nsa_nr5g_band"], nr5gMode)
-	return final, nil
+	if !strings.Contains(raw, "OK") {
+		return nil, routerErrf("Modem rejected the 5G mode change: %s", strings.TrimSpace(raw))
+	}
+	if err := saveModePref(mode); err != nil {
+		return nil, err
+	}
+	return getModemConfig()
+}
+
+// normalizeBandList turns "1:3:7" / "1,3,7" (in any order, with dupes) into
+// the daemon's "1,3,7" form. Only digits and separators get through, since
+// the result ends up in a command run on the router.
+func normalizeBandList(s string) (string, error) {
+	fields := strings.FieldsFunc(s, func(r rune) bool { return r == ':' || r == ',' || r == ' ' })
+	seen := map[int]bool{}
+	var nums []int
+	for _, f := range fields {
+		n, err := strconv.Atoi(f)
+		if err != nil || n < 1 || n > 300 {
+			return "", routerErrf("Invalid band %q", f)
+		}
+		if !seen[n] {
+			seen[n] = true
+			nums = append(nums, n)
+		}
+	}
+	if len(nums) == 0 {
+		return "", nil
+	}
+	sort.Ints(nums)
+	parts := make([]string, len(nums))
+	for i, n := range nums {
+		parts[i] = strconv.Itoa(n)
+	}
+	return strings.Join(parts, ","), nil
+}
+
+// applyBandsViaDaemon hands the band lists to the stock mobile daemon - the
+// same call the stock web UI's setCellularBand makes. The daemon programs
+// the modem over QMI and saves the lists to UCI, and re-applies them on its
+// own every time it starts, so nothing on our side has to re-assert them.
+func applyBandsViaDaemon(lte, sa, nsa string) error {
+	payload, _ := json.Marshal(map[string]string{"lte_band": lte, "sa_band": sa, "nsa_band": nsa})
+	b64 := base64.StdEncoding.EncodeToString(payload)
+	out, err := run(fmt.Sprintf(`ubus call mobile device "$(echo %s | base64 -d)"`, b64), 90*time.Second)
+	if err != nil {
+		return err
+	}
+	var resp struct {
+		Code *int `json:"code"`
+	}
+	if json.Unmarshal([]byte(out), &resp) != nil || resp.Code == nil || *resp.Code != 0 {
+		return routerErrf("The modem daemon rejected the band change: %s", strings.TrimSpace(out))
+	}
+	return nil
+}
+
+func setBands(nr5gBand, nsaNr5gBand, lteBand string) (map[string]string, error) {
+	lte, err := normalizeBandList(lteBand)
+	if err != nil {
+		return nil, err
+	}
+	sa, err := normalizeBandList(nr5gBand)
+	if err != nil {
+		return nil, err
+	}
+	nsa, err := normalizeBandList(nsaNr5gBand)
+	if err != nil {
+		return nil, err
+	}
+	if lte == "" || sa == "" || nsa == "" {
+		return nil, routerErrf("Each list needs at least one band (to turn 5G off, use the 5G mode selector instead)")
+	}
+	if err := applyBandsViaDaemon(lte, sa, nsa); err != nil {
+		return nil, err
+	}
+	return getModemConfig()
 }
 
 // ------------------------------------------------------------------- WiFi ---
@@ -737,13 +803,16 @@ func spoofFirmwareVersion() (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// Adapted from davidohne/xiaomi_cb0401 (https://github.com/davidohne/xiaomi_cb0401/tree/main/Band_Unlock),
-// originally written for the CB0401 (v1) - the modem is technically a
-// different revision on the V2 (Quectel R01 vs R03), but this only
-// configures the modem via AT+QNWPREFCFG, it doesn't touch modem firmware,
-// so the same commands apply either way. Confirmed working on a CB0401V2.
+// Persisting the 5G SA/NSA mode. Bands don't need any of this: the stock
+// mobile daemon keeps them in UCI and re-applies them itself (see
+// applyBandsViaDaemon). nr5g_disable_mode is the one setting the daemon
+// doesn't manage, so a small hotplug hook re-asserts it on every wan_2 ifup.
+// /etc/hotplug.d lives on ramfs, so the patch script (run from a firewall
+// include at every boot) re-creates the symlink to the persistent hook.
+// The hook/patch layout is adapted from davidohne/xiaomi_cb0401
+// (https://github.com/davidohne/xiaomi_cb0401/tree/main/Band_Unlock).
 const (
-	band5gPatchScript = `#!/bin/sh
+	modePatchScript = `#!/bin/sh
 
 [ -e "/tmp/5g_band_patch.log" ] && exit 0
 
@@ -758,138 +827,173 @@ if [ ! -e "$HOOK_DEST" ] || [ ! -f "$HOOK_DEST" ]; then
     ln -sf "$HOOK_SRC" "$HOOK_DEST"
 fi
 
-echo "5g band hook installed" > /tmp/5g_band_patch.log
+echo "5g mode hook installed" > /tmp/5g_band_patch.log
 `
-	// Reads the desired bands from band_prefs.conf (written by
-	// updateBandPrefs, kept in sync with whatever was last written through
-	// the Cellular card) rather than hardcoding a fixed list - the
-	// hardcoded version silently overwrote the user's own band/region
-	// choice every time the modem happened to reconnect (any wan_2 "ifup"
-	// event re-fires this hook), which is exactly what caused a region
-	// preset to intermittently appear to "not take": the write succeeded,
-	// but a reconnect right after re-applied the hook's stale defaults
-	// before the confirmation read.
-	band5gHookScript = `#!/bin/sh
+	// Goes through microcom (and its port lock) like the stock at_cmd.sh,
+	// so it can't interleave with the stock daemon's own AT traffic.
+	modeHookScript = `#!/bin/sh
+# cb0401-tune-control: 5G mode hook v2 (mode only - bands are kept by the stock mobile daemon)
 [ "$ACTION" = "ifup" ] || exit 0
 [ "$INTERFACE" = "wan_2" ] || exit 0
-CONF="/data/custom/hooks/band_prefs.conf"
-NR5G_BAND="1:3:7:28:38:75:78"
-NSA_NR5G_BAND="1:3:7:28:38:75:78"
-NR5G_MODE="0"
-[ -f "$CONF" ] && . "$CONF"
-ATPORT="/dev/ttyUSB2"
-send() { printf '%s\r' "$1" >"$ATPORT"; usleep 100000; }
-send "AT+QNWPREFCFG=\"nr5g_disable_mode\",$NR5G_MODE"
-send "AT+QNWPREFCFG=\"nsa_nr5g_band\",$NSA_NR5G_BAND"
-send "AT+QNWPREFCFG=\"nr5g_band\",$NR5G_BAND"
+NR5G_MODE=""
+[ -f /data/custom/hooks/band_prefs.conf ] && . /data/custom/hooks/band_prefs.conf
+[ -n "$NR5G_MODE" ] || exit 0
+L=/var/lock/LCK..ttyUSB2
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -e $L ] || break; usleep 250000; done
+printf 'AT+QNWPREFCFG="nr5g_disable_mode",%s\r' "$NR5G_MODE" | busybox microcom /dev/ttyUSB2 >/dev/null 2>&1 & P=$!
+usleep 800000
+kill $P 2>/dev/null
 `
-	band5gFirewallSnippet = `
+	modeHookMarker        = "5G mode hook v2"
+	modeFirewallSnippet = `
 config include 'auto_5g_band_patch'
 	option type 'script'
 	option path '/data/etc/crontabs/patches/5g_band_patch.sh'
 	option enabled '1'
 `
-	band5gPatchPath = "/data/etc/crontabs/patches/5g_band_patch.sh"
-	band5gHookPath  = "/data/custom/hooks/99-set-5g-bands"
-	band5gPrefsPath = "/data/custom/hooks/band_prefs.conf"
+	modePatchPath = "/data/etc/crontabs/patches/5g_band_patch.sh"
+	modeHookPath  = "/data/custom/hooks/99-set-5g-bands"
+	modePrefsPath = "/data/custom/hooks/band_prefs.conf"
 )
 
-// updateBandPrefs writes the bands the hotplug hook (see band5gHookScript)
-// should reapply on every wan_2 reconnect. Called after a successful
-// setBands() so the hook stays in sync with whatever was last written
-// through the Cellular card - without this, the hook's own hardcoded
-// fallback would silently overwrite that choice the next time the modem
-// reconnects. A no-op if the hook was never installed.
-func hookInstalled() bool {
-	out, err := run(fmt.Sprintf("[ -f %s ] && echo 1 || echo 0", band5gHookPath), 10*time.Second)
-	return err == nil && strings.TrimSpace(out) == "1"
-}
+var hookMu sync.Mutex
 
-func updateBandPrefs(nr5gBand, nsaNr5gBand string, nr5gMode int) error {
-	if !hookInstalled() {
-		return nil
-	}
-	content := fmt.Sprintf("NR5G_BAND=%s\nNSA_NR5G_BAND=%s\nNR5G_MODE=%d\n", nr5gBand, nsaNr5gBand, nr5gMode)
-	b64 := base64.StdEncoding.EncodeToString([]byte(content))
-	_, err := run(fmt.Sprintf("echo %s | base64 -d > %s", b64, band5gPrefsPath), 10*time.Second)
-	return err
-}
-
-// updateModePrefs updates only NR5G_MODE in the prefs file without touching band values.
-func updateModePrefs(mode int) error {
-	if !hookInstalled() {
-		return nil
-	}
-	cmd := fmt.Sprintf(
-		"touch %s && sed -i '/^NR5G_MODE=/d' %s && printf 'NR5G_MODE=%%d\\n' %d >> %s",
-		band5gPrefsPath, band5gPrefsPath, mode, band5gPrefsPath,
-	)
-	_, err := run(cmd, 10*time.Second)
-	return err
-}
-
-// unlock5GBands installs a permanent hotplug hook that unlocks Standalone
-// mode and extra 5G bands (n1/n3/n7/n28/n38/n75/n78) on the modem every
-// time the wan_2 interface comes up (including after a reboot), then
-// forces it to run once immediately.
-func unlock5GBands() (string, error) {
+// installModeHook writes the current mode hook and its boot-time patch
+// script, registers the firewall include once, and links the hook now.
+func installModeHook() error {
 	if _, err := run("mkdir -p /data/etc/crontabs/patches /data/custom/hooks /etc/hotplug.d/iface", 10*time.Second); err != nil {
-		return "", err
-	}
-
-	writeFile := func(path, content string) error {
-		b64 := base64.StdEncoding.EncodeToString([]byte(content))
-		_, err := run(fmt.Sprintf("echo %s | base64 -d > %s", b64, path), 10*time.Second)
 		return err
 	}
-	if err := writeFile(band5gPatchPath, band5gPatchScript); err != nil {
-		return "", err
-	}
-	if err := writeFile(band5gHookPath, band5gHookScript); err != nil {
-		return "", err
-	}
-	if _, err := run(fmt.Sprintf("chmod 755 %s %s", band5gPatchPath, band5gHookPath), 10*time.Second); err != nil {
-		return "", err
-	}
-
-	already, err := run("grep -c auto_5g_band_patch /etc/config/firewall 2>/dev/null || true", 10*time.Second)
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(already) == "0" || strings.TrimSpace(already) == "" {
-		b64 := base64.StdEncoding.EncodeToString([]byte(band5gFirewallSnippet))
-		if _, err := run(fmt.Sprintf("echo %s | base64 -d >> /etc/config/firewall", b64), 10*time.Second); err != nil {
-			return "", err
+	for path, content := range map[string]string{modePatchPath: modePatchScript, modeHookPath: modeHookScript} {
+		b64 := base64.StdEncoding.EncodeToString([]byte(content))
+		if _, err := run(fmt.Sprintf("echo %s | base64 -d > %s && chmod 755 %s", b64, path, path), 10*time.Second); err != nil {
+			return err
 		}
 	}
+	b64 := base64.StdEncoding.EncodeToString([]byte(modeFirewallSnippet))
+	cmd := fmt.Sprintf("grep -q auto_5g_band_patch /etc/config/firewall 2>/dev/null || echo %s | base64 -d >> /etc/config/firewall; rm -f /tmp/5g_band_patch.log; sh %s", b64, modePatchPath)
+	_, err := run(cmd, 15*time.Second)
+	return err
+}
 
-	// Seed band_prefs.conf with whatever the modem is already configured
-	// for right now (rather than the hook's own hardcoded fallback), so
-	// installing the hook doesn't change bands you've already picked.
-	// Only do this if no prefs file exists yet - otherwise re-running this
-	// (e.g. to redeploy a fixed hook script) would read the modem's current
-	// state, which may itself be the OLD hook's hardcoded reset (mode 0),
-	// and clobber a mode/band choice already saved in the conf.
-	prefsExist, _ := run(fmt.Sprintf("[ -f %s ] && echo 1 || echo 0", band5gPrefsPath), 10*time.Second)
-	if strings.TrimSpace(prefsExist) != "1" {
-		if cfg, err := getModemConfig(); err == nil && cfg["nr5g_band"] != "" {
-			cfgMode, _ := strconv.Atoi(cfg["nr5g_disable_mode"])
-			_ = updateBandPrefs(cfg["nr5g_band"], cfg["nsa_nr5g_band"], cfgMode)
+// migrateLegacyBandHook upgrades routers set up by earlier versions, whose
+// hook re-wrote the 5G bands over AT on every reconnect from
+// band_prefs.conf. Those bands are handed to the stock daemon instead (so
+// they survive once the old hook stops writing them), then the hook is
+// replaced by the mode-only one. Safe to call repeatedly; does nothing on
+// routers without a hook or with the current one.
+func migrateLegacyBandHook() error {
+	hookMu.Lock()
+	defer hookMu.Unlock()
+	raw, err := run(fmt.Sprintf(`[ -f %[1]s ] || { echo NOHOOK; exit 0; }; grep -q %[2]q %[1]s && { echo CURRENT; exit 0; }; echo LEGACY; cat %[3]s 2>/dev/null`, modeHookPath, modeHookMarker, modePrefsPath), 10*time.Second)
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(strings.TrimSpace(raw), "LEGACY") {
+		return nil
+	}
+	prefs := parseConf(raw)
+	u, err := readUciBands()
+	if err != nil {
+		return err
+	}
+	sa, _ := normalizeBandList(prefs["NR5G_BAND"])
+	nsa, _ := normalizeBandList(prefs["NSA_NR5G_BAND"])
+	curSA, _ := normalizeBandList(u["SA"])
+	curNSA, _ := normalizeBandList(u["NSA"])
+	lte, _ := normalizeBandList(u["LTE"])
+	if sa == "" {
+		sa = curSA
+	}
+	if nsa == "" {
+		nsa = curNSA
+	}
+	if lte != "" && sa != "" && nsa != "" && (sa != curSA || nsa != curNSA) {
+		if err := applyBandsViaDaemon(lte, sa, nsa); err != nil {
+			return err
 		}
 	}
-
-	if _, err := run(fmt.Sprintf("rm -f /tmp/5g_band_patch.log; sh %s", band5gPatchPath), 10*time.Second); err != nil {
-		return "", err
+	mode := prefs["NR5G_MODE"]
+	if len(mode) != 1 || mode < "0" || mode > "3" {
+		mode = "0"
 	}
+	if _, err := run(fmt.Sprintf("printf 'NR5G_MODE=%%s\\n' %s > %s", mode, modePrefsPath), 10*time.Second); err != nil {
+		return err
+	}
+	return installModeHook()
+}
 
-	out, err := run(fmt.Sprintf("ACTION=ifup INTERFACE=wan_2 sh %s; echo APPLIED", band5gHookPath), 15*time.Second)
+// saveModePref records the mode for the hook to re-assert, installing the
+// hook first if this router doesn't have it yet (only needed once a
+// non-default mode is chosen).
+func saveModePref(mode int) error {
+	if err := migrateLegacyBandHook(); err != nil {
+		return err
+	}
+	out, err := run(fmt.Sprintf("[ -f %s ] && echo 1 || echo 0", modeHookPath), 10*time.Second)
 	if err != nil {
-		return "", err
+		return err
 	}
-	if !strings.Contains(out, "APPLIED") {
-		return "", routerErrf("The hook did not report success: %s", strings.TrimSpace(out))
+	if strings.TrimSpace(out) != "1" {
+		if mode == 0 {
+			return nil
+		}
+		if err := installModeHook(); err != nil {
+			return err
+		}
 	}
-	return "Bands unlocked: SA mode enabled. The hook is now permanent and reapplies your current band selection on every wan_2 interface up (including after reboot) - whatever you write from the Cellular card below stays in effect.", nil
+	_, err = run(fmt.Sprintf("printf 'NR5G_MODE=%%d\\n' %d > %s", mode, modePrefsPath), 10*time.Second)
+	return err
+}
+
+const bandsUnlockedMarker = "/data/custom/hooks/.bands_unlocked"
+
+// provisionRouter is what setup.sh/setup.ps1 run once the GUI is built
+// (`cb0401-tune-control --provision`): upgrade a legacy band hook, install
+// the 5G mode hook, and on the very first run enable every band the modem
+// hardware actually supports. That first-run unlock is recorded on the
+// router, so re-running setup never overrides a band choice made since.
+func provisionRouter() error {
+	if err := migrateLegacyBandHook(); err != nil {
+		return fmt.Errorf("migrating legacy band hook: %w", err)
+	}
+	if err := installModeHook(); err != nil {
+		return fmt.Errorf("installing 5G mode hook: %w", err)
+	}
+	fmt.Println("5G mode hook installed (keeps the SA/NSA mode across reboots).")
+
+	done, err := run(fmt.Sprintf("[ -f %s ] && echo 1 || echo 0", bandsUnlockedMarker), 10*time.Second)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(done) == "1" {
+		fmt.Println("Bands were already unlocked by an earlier setup run - keeping your current band selection.")
+		return nil
+	}
+	u, err := readUciBands()
+	if err != nil {
+		return err
+	}
+	var hw *struct{ lte, nr string }
+	for prefix, sup := range modemBandSupport {
+		if strings.HasPrefix(u["MODEL"], prefix) {
+			s := sup
+			hw = &s
+		}
+	}
+	if hw == nil {
+		fmt.Printf("Unknown modem model %q - not changing bands; pick them in the GUI.\n", u["MODEL"])
+		return nil
+	}
+	fmt.Println("Enabling every band this modem supports (the modem may briefly reconnect)...")
+	if err := applyBandsViaDaemon(hw.lte, hw.nr, hw.nr); err != nil {
+		return err
+	}
+	if _, err := run("touch "+bandsUnlockedMarker, 10*time.Second); err != nil {
+		return err
+	}
+	fmt.Printf("Bands unlocked: LTE %s / 5G SA+NSA %s (saved by the stock modem daemon, survives reboots).\n", hw.lte, hw.nr)
+	return nil
 }
 
 var (

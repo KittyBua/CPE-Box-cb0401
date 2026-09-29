@@ -61,6 +61,7 @@
   .region-head button { padding: 3px 9px; font-size: 11px; }
   .bandchip { padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); font-size: 12px; cursor: pointer; user-select: none; background: var(--panel2); }
   .bandchip.on { background: rgba(91,140,255,.18); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .bandchip.warn { background: rgba(240,169,78,.12); border-color: var(--warn); color: var(--warn); font-weight: 600; text-decoration: line-through; }
   .field-label { color: var(--muted); font-size: 12px; margin: 10px 0 4px; }
   textarea { width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-family: ui-monospace, monospace; font-size: 12px; min-height: 140px; }
   .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
@@ -83,7 +84,7 @@
 <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()">🌙</button>
 
 <h1>XIAOMI 5G CPE PRO CB0401V1/V2 Tune + Control</h1>
-<div class="sub">Local panel for the router (192.168.31.1) &middot; <span id="lastUpdate">—</span> <button class="refresh-btn" onclick="loadStatus()">⟳</button> &middot; v0.3.2</div>
+<div class="sub">Local panel for the router (192.168.31.1) &middot; <span id="lastUpdate">—</span> <button class="refresh-btn" onclick="loadStatus()">⟳</button> &middot; v0.3.3</div>
 
 <div class="grid">
 
@@ -132,25 +133,26 @@
         </select>
       </span>
     </div>
-    <div class="field-label" style="margin-top:16px;">Region (applies to all three lists below at once)</div>
+    <div class="row"><span class="k">Modem</span><span class="v" id="modemModel">—</span></div>
+    <div class="field-label" style="margin-top:16px;">Presets (only bands this modem can use)</div>
     <div class="actions" style="margin-bottom:6px;">
       <button id="regionBtn_Europe" onclick="applyRegion('Europe')">Europe</button>
       <button id="regionBtn_America" onclick="applyRegion('America')">America</button>
       <button id="regionBtn_Asia" onclick="applyRegion('Asia')">Asia</button>
-      <button onclick="applyRegion(null)">Clear all</button>
+      <button id="regionBtn_All" onclick="applyRegion('All')">All supported</button>
     </div>
-    <div class="field-label">NR5G bands (SA)</div>
+    <div class="field-label">5G SA bands (standalone 5G)</div>
     <div class="bandlist" id="nr5gBands"></div>
-    <div class="field-label">NR5G bands (NSA)</div>
+    <div class="field-label">5G NSA bands (5G on top of an LTE anchor)</div>
     <div class="bandlist" id="nsaBands"></div>
     <div class="field-label">LTE bands</div>
     <div class="bandlist" id="lteBands"></div>
+    <div class="note" id="bandsNote">Loading…</div>
     <div class="actions">
-      <button class="primary" onclick="saveBands()">Write to device</button>
-      <button class="danger" onclick="unlock5GBands()">Unlock extra 5G bands + SA (permanent hook)</button>
+      <button class="primary" id="saveBandsBtn" onclick="saveBands()" disabled>Apply bands</button>
+      <button id="discardBandsBtn" onclick="discardBands()" disabled>Discard changes</button>
     </div>
     <div class="status-line" id="bandsStatus"></div>
-    <div class="status-line" id="unlockBandsStatus"></div>
   </div>
 
   <!-- WiFi -->
@@ -298,86 +300,169 @@ function toggleTheme() {
   applyTheme(saved);
 })();
 
-// Bands by region — with real overlap: the same band is deliberately listed
-// under several regions when it's actually deployed there by real operators
-// (e.g. n1/n3/n78 — both Europe and Asia; n28 — Asia/APT700 and Latin
-// America). Sources: GSMA/3GPP band allocation tables + real-world operator
-// deployment, cross-checked via research.
+// Bands by region - the main commercial LTE / 5G NR deployments in each
+// region (GSMA / 3GPP allocations cross-checked against real operators).
+// The same band is listed under several regions when it's really deployed
+// in each (e.g. n1/n3/n78 in Europe and Asia, n28 in Asia/APT700 and Latin
+// America). Presets are always intersected with what the modem supports,
+// so a region's list is data, not a promise the modem can use all of it.
 const NR5G_REGIONS = {
-  // n28 and n77 were added to Europe not just per documentation but on
-  // direct evidence: this is the FACTORY list on this exact device
-  // (Magenta/o2 DE) — a real European carrier keeps them enabled by default.
-  'Europe':  [1, 3, 7, 8, 20, 28, 38, 75, 77, 78],
-  'America': [2, 5, 12, 25, 41, 66, 70, 71, 77],
-  'Asia':    [1, 3, 5, 7, 8, 28, 38, 40, 41, 75, 77, 78, 79],
+  'Europe':  [1, 3, 7, 8, 20, 28, 38, 40, 75, 76, 77, 78],
+  'America': [2, 5, 12, 14, 25, 26, 28, 29, 30, 41, 48, 66, 70, 71, 77, 78],
+  'Asia':    [1, 3, 5, 8, 28, 40, 41, 77, 78, 79],
 };
 const LTE_REGIONS = {
-  'Europe':  [1, 3, 7, 8, 20, 28, 32, 38],
-  'America': [2, 4, 5, 12, 13, 14, 17, 25, 26, 28, 29, 30, 41, 46, 48, 66, 71],
-  'Asia':    [1, 3, 5, 7, 8, 18, 19, 20, 28, 38, 39, 40, 41, 42, 43],
+  'Europe':  [1, 3, 7, 8, 20, 28, 32, 38, 40, 42, 43],
+  'America': [2, 4, 5, 7, 12, 13, 14, 17, 25, 26, 28, 29, 30, 41, 46, 48, 66, 71],
+  'Asia':    [1, 3, 5, 7, 8, 11, 18, 19, 21, 26, 28, 34, 38, 39, 40, 41, 42],
 };
-const NR5G_ALL = Array.from(new Set(Object.values(NR5G_REGIONS).flat())).sort((a,b)=>a-b);
-const LTE_ALL  = Array.from(new Set(Object.values(LTE_REGIONS).flat())).sort((a,b)=>a-b);
+const unionOf = obj => Array.from(new Set(Object.values(obj).flat())).sort((a,b)=>a-b);
+const parseBands = s => (s || '').split(/[:,]/).filter(Boolean).map(Number);
+const joinBands = arr => Array.from(new Set(arr)).sort((a,b)=>a-b).join(':');
 
+// What the router reports (configured = the stock daemon's persistent
+// setting; effective = what the modem actually uses; hw = what this modem
+// model supports, when known).
+let modemState = { configured: {}, effective: {}, hwNr: null, hwLte: null, model: '' };
 let currentBands = { nr5g_band: '', nsa_nr5g_band: '', lte_band: '' };
-// Same idea as deviceMonitorDirty: loadStatus() runs every 20s and used to
-// overwrite an in-progress band-chip edit or a picked-but-not-yet-applied
-// Wi-Fi channel/width before you got to click Write to device / Apply.
+// loadStatus() runs every 20s; don't let it overwrite an unsaved chip edit
+// or a picked-but-not-yet-applied Wi-Fi channel/width.
 let bandsDirty = false;
 let wifiDirty = false;
 function markWifiDirty() { wifiDirty = true; }
 
-// Flat chip list — no repeated region headers inside each block. The region
-// is now chosen ONCE at the top (applyRegion) and immediately sets chips
-// across all three lists.
-function renderBandChips(containerId, allBands, activeStr, key, prefix) {
-  const active = new Set((activeStr || '').split(':').filter(Boolean).map(Number));
+function universe(kind) {
+  const hw = kind === 'lte' ? modemState.hwLte : modemState.hwNr;
+  return hw || unionOf(kind === 'lte' ? LTE_REGIONS : NR5G_REGIONS);
+}
+function presetFor(region, kind) {
+  const u = universe(kind);
+  if (region === 'All') return u.slice();
+  const src = (kind === 'lte' ? LTE_REGIONS : NR5G_REGIONS)[region];
+  return src.filter(b => u.includes(b));
+}
+
+function setBandsDirty(d) {
+  bandsDirty = d;
+  document.getElementById('saveBandsBtn').disabled = !d;
+  document.getElementById('discardBandsBtn').disabled = !d;
+  if (d) {
+    const el = document.getElementById('bandsStatus');
+    el.textContent = 'unsaved changes'; el.className = 'status-line';
+  }
+}
+
+function renderBandChips(containerId, key, prefix, kind) {
+  const active = new Set(parseBands(currentBands[key]));
+  const effectiveStr = modemState.effective[key];
+  const effective = effectiveStr != null ? new Set(parseBands(effectiveStr)) : null;
+  const configured = new Set(parseBands(modemState.configured[key]));
+  // Show every band the modem supports, plus anything selected/configured
+  // outside that (so a band the modem can't use is visible and removable).
+  const all = Array.from(new Set([...universe(kind), ...active])).sort((a,b)=>a-b);
   const el = document.getElementById(containerId);
   el.innerHTML = '';
-  allBands.forEach(b => {
+  all.forEach(b => {
     const chip = document.createElement('div');
-    chip.className = 'bandchip' + (active.has(b) ? ' on' : '');
+    let cls = 'bandchip';
+    let title = 'Off - click to enable';
+    if (active.has(b)) {
+      // Flag a band only once it's really been written and the modem still
+      // doesn't use it - not while it's merely picked and unsaved.
+      const unusable = configured.has(b) && effective && !effective.has(b);
+      const unsupported = modemState[kind === 'lte' ? 'hwLte' : 'hwNr'] && !universe(kind).includes(b);
+      if (unusable || unsupported) {
+        cls += ' warn';
+        title = 'Selected, but this modem cannot use this band - click to remove';
+      } else {
+        cls += ' on';
+        title = 'On - click to disable';
+      }
+    }
+    chip.className = cls;
+    chip.title = title;
     chip.textContent = prefix + b;
     chip.onclick = () => {
       if (active.has(b)) active.delete(b); else active.add(b);
-      currentBands[key] = Array.from(active).sort((a,b)=>a-b).join(':');
-      selectedRegion = null; // manual chip edit — no longer a "clean" region preset
-      bandsDirty = true;
+      currentBands[key] = joinBands(Array.from(active));
+      setBandsDirty(true);
       highlightRegionButton();
-      renderBandChips(containerId, allBands, currentBands[key], key, prefix);
+      renderBandChips(containerId, key, prefix, kind);
     };
     el.appendChild(chip);
   });
 }
 
 function renderAllBandLists() {
-  renderBandChips('nr5gBands', NR5G_ALL, currentBands.nr5g_band, 'nr5g_band', 'n');
-  renderBandChips('nsaBands', NR5G_ALL, currentBands.nsa_nr5g_band, 'nsa_nr5g_band', 'n');
-  renderBandChips('lteBands', LTE_ALL, currentBands.lte_band, 'lte_band', 'B');
+  renderBandChips('nr5gBands', 'nr5g_band', 'n', 'nr');
+  renderBandChips('nsaBands', 'nsa_nr5g_band', 'n', 'nr');
+  renderBandChips('lteBands', 'lte_band', 'B', 'lte');
+  renderBandsNote();
+}
+
+function renderBandsNote() {
+  const note = document.getElementById('bandsNote');
+  if (!modemState.hwNr) {
+    note.textContent = 'Modem model not recognised - showing every regional band; any the modem can\'t use are struck through after Apply.';
+    return;
+  }
+  const missing = [];
+  ['Europe', 'America', 'Asia'].forEach(r => {
+    const lte = LTE_REGIONS[r].filter(b => !modemState.hwLte.includes(b)).map(b => 'B' + b);
+    const nr = NR5G_REGIONS[r].filter(b => !modemState.hwNr.includes(b)).map(b => 'n' + b);
+    if (lte.length || nr.length) missing.push(r + ': ' + lte.concat(nr).join(' '));
+  });
+  note.textContent = 'This modem (' + modemState.model + ') supports LTE ' + modemState.hwLte.map(b => 'B' + b).join(' ') +
+    ' and 5G ' + modemState.hwNr.map(b => 'n' + b).join(' ') + '. Not supported, so left out of the presets - ' + missing.join('; ') +
+    '. Applied bands are saved by the stock modem daemon and survive reboots.';
 }
 
 let selectedRegion = null;
 
 function highlightRegionButton() {
-  ['Europe', 'America', 'Asia'].forEach(r => {
+  selectedRegion = ['Europe', 'America', 'Asia', 'All'].find(r =>
+    currentBands.nr5g_band === joinBands(presetFor(r, 'nr')) &&
+    currentBands.nsa_nr5g_band === joinBands(presetFor(r, 'nr')) &&
+    currentBands.lte_band === joinBands(presetFor(r, 'lte'))
+  ) || null;
+  ['Europe', 'America', 'Asia', 'All'].forEach(r => {
     const btn = document.getElementById('regionBtn_' + r);
     if (btn) btn.classList.toggle('region-active', r === selectedRegion);
   });
 }
 
-// One button per region — applies that region's bands to ALL THREE lists
-// (NR5G SA, NR5G NSA, LTE) at once, instead of one at a time.
+// One click sets all three lists (SA, NSA, LTE) to that region's bands
+// that this modem supports.
 function applyRegion(regionName) {
-  selectedRegion = regionName;
-  if (regionName === null) {
-    currentBands.nr5g_band = '';
-    currentBands.nsa_nr5g_band = '';
-    currentBands.lte_band = '';
-  } else {
-    currentBands.nr5g_band = NR5G_REGIONS[regionName].slice().sort((a,b)=>a-b).join(':');
-    currentBands.nsa_nr5g_band = currentBands.nr5g_band;
-    currentBands.lte_band = LTE_REGIONS[regionName].slice().sort((a,b)=>a-b).join(':');
+  currentBands.nr5g_band = joinBands(presetFor(regionName, 'nr'));
+  currentBands.nsa_nr5g_band = currentBands.nr5g_band;
+  currentBands.lte_band = joinBands(presetFor(regionName, 'lte'));
+  setBandsDirty(true);
+  highlightRegionButton();
+  renderAllBandLists();
+}
+
+function syncBandsFromModem(m) {
+  modemState.configured = { nr5g_band: m.nr5g_band || '', nsa_nr5g_band: m.nsa_nr5g_band || '', lte_band: m.lte_band || '' };
+  modemState.effective = {};
+  ['nr5g_band', 'nsa_nr5g_band', 'lte_band'].forEach(k => {
+    if (m['effective_' + k] != null) modemState.effective[k] = m['effective_' + k];
+  });
+  modemState.hwNr = m.hw_nr5g_band ? parseBands(m.hw_nr5g_band) : null;
+  modemState.hwLte = m.hw_lte_band ? parseBands(m.hw_lte_band) : null;
+  modemState.model = m.modem_model || '';
+  document.getElementById('modemModel').textContent = modemState.model || '—';
+  if (!bandsDirty) {
+    currentBands = Object.assign({}, modemState.configured);
+    highlightRegionButton();
+    renderAllBandLists();
   }
+}
+
+function discardBands() {
+  setBandsDirty(false);
+  currentBands = Object.assign({}, modemState.configured);
+  document.getElementById('bandsStatus').textContent = '';
   highlightRegionButton();
   renderAllBandLists();
 }
@@ -396,36 +481,20 @@ async function loadStatus() {
     const m = data.modem || {};
     const w = data.wifi || {};
 
-    // 5G mode select syncs immediately from server (no unsaved state to protect).
-    const dm = m.nr5g_disable_mode || '0';
-    const sel = document.getElementById('saModeSelect');
-    sel.value = dm;
-    if (!sel.value) sel.value = '0'; // fallback for unknown values
-    const badge = document.getElementById('saBadge');
-    const modeLabels = {'0':'SA+NSA','1':'LTE','2':'SA','3':'LTE'};
-    const modeCss    = {'0':'nsa',  '1':'nsa', '2':'sa', '3':'nsa'};
-    badge.textContent = modeLabels[dm] || dm;
-    badge.className = 'badge ' + (modeCss[dm] || 'nsa');
-
-    // Skip refreshing the band chips while there's an un-written edit
-    // (bandsDirty) - otherwise this runs every 20s and would silently
-    // discard a chip you'd just toggled before you got to click Write to
-    // device.
-    if (!bandsDirty) {
-      currentBands.nr5g_band = m.nr5g_band || '';
-      currentBands.nsa_nr5g_band = m.nsa_nr5g_band || '';
-      currentBands.lte_band = m.lte_band || '';
-
-      // If what's actually on the modem matches one of the presets, highlight
-      // the matching region button instead of just clearing everything.
-      selectedRegion = ['Europe', 'America', 'Asia'].find(r =>
-        currentBands.nr5g_band === NR5G_REGIONS[r].slice().sort((a,b)=>a-b).join(':') &&
-        currentBands.lte_band === LTE_REGIONS[r].slice().sort((a,b)=>a-b).join(':')
-      ) || null;
-      highlightRegionButton();
-
-      renderAllBandLists();
+    // 5G mode select syncs from the modem; skipped if the AT read failed
+    // this round, so a hiccup never flips the selector to a wrong value.
+    const dm = m.nr5g_disable_mode;
+    if (dm != null) {
+      const sel = document.getElementById('saModeSelect');
+      sel.value = dm;
+      if (!sel.value) sel.value = '0';
+      const badge = document.getElementById('saBadge');
+      const modeLabels = {'0':'SA+NSA','1':'NSA only','2':'SA only','3':'LTE only'};
+      const modeCss    = {'0':'sa',    '1':'nsa',     '2':'sa',     '3':'off'};
+      badge.textContent = modeLabels[dm] || dm;
+      badge.className = 'badge ' + (modeCss[dm] || 'nsa');
     }
+    syncBandsFromModem(m);
 
     if (w['5']) {
       document.getElementById('wifi5Ssid').textContent = w['5'].ssid || '—';
@@ -457,10 +526,10 @@ async function loadStatus() {
 async function setSAMode() {
   const mode = parseInt(document.getElementById('saModeSelect').value, 10);
   const el = document.getElementById('bandsStatus');
-  el.textContent = 'applying...'; el.className = 'status-line';
+  el.textContent = 'applying 5G mode...'; el.className = 'status-line';
   try {
     await api('/api/sa', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mode})});
-    el.textContent = 'done'; el.className = 'status-line ok';
+    el.textContent = '5G mode applied - kept across reboots'; el.className = 'status-line ok';
     loadStatus();
   } catch (e) {
     el.textContent = 'error: ' + e.message; el.className = 'status-line error';
@@ -469,12 +538,28 @@ async function setSAMode() {
 
 async function saveBands() {
   const el = document.getElementById('bandsStatus');
-  el.textContent = 'applying (may take a couple seconds)...'; el.className = 'status-line';
+  el.textContent = 'applying - the modem may reconnect, this can take up to a minute...'; el.className = 'status-line';
+  document.getElementById('saveBandsBtn').disabled = true;
   try {
-    await api('/api/bands', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(currentBands)});
-    el.textContent = 'done'; el.className = 'status-line ok';
-    loadStatus();
+    const m = await api('/api/bands', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(currentBands)});
+    setBandsDirty(false);
+    syncBandsFromModem(m);
+    const unusable = [];
+    [['nr5g_band','n','SA'], ['nsa_nr5g_band','n','NSA'], ['lte_band','B','LTE']].forEach(([k, pre, label]) => {
+      if (m['effective_' + k] == null) return;
+      const eff = new Set(parseBands(m['effective_' + k]));
+      const bad = parseBands(m[k]).filter(b => !eff.has(b));
+      if (bad.length) unusable.push(label + ' ' + bad.map(b => pre + b).join(' '));
+    });
+    if (unusable.length) {
+      el.textContent = 'applied, but the modem can\'t use: ' + unusable.join('; ');
+      el.className = 'status-line error';
+    } else {
+      el.textContent = 'applied - saved by the modem daemon, survives reboots';
+      el.className = 'status-line ok';
+    }
   } catch (e) {
+    document.getElementById('saveBandsBtn').disabled = false;
     el.textContent = 'error: ' + e.message; el.className = 'status-line error';
   }
 }
@@ -523,20 +608,6 @@ async function spoofVersion() {
     const data = await api('/api/spoof-version', {method: 'POST'});
     el.textContent = 'done — router now reports: ' + data.reported;
     el.className = 'status-line ok';
-  } catch (e) {
-    el.textContent = 'error: ' + e.message; el.className = 'status-line error';
-  }
-}
-
-async function unlock5GBands() {
-  if (!confirm("Install a permanent hook that unlocks Standalone mode and extra 5G bands (n1/n3/n7/n28/n38/n75/n78)?\n\nThis writes two small scripts to the router and reapplies them every time the cellular interface comes up, including after a reboot.")) return;
-  const el = document.getElementById('unlockBandsStatus');
-  el.textContent = 'applying...'; el.className = 'status-line';
-  try {
-    const data = await api('/api/unlock-5g-bands', {method: 'POST'});
-    el.textContent = data.result;
-    el.className = 'status-line ok';
-    loadStatus();
   } catch (e) {
     el.textContent = 'error: ' + e.message; el.className = 'status-line error';
   }

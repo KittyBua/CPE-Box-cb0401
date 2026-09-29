@@ -343,6 +343,12 @@ if (Test-Path $EnvFile) {
     $pwLine = Get-Content $EnvFile | Where-Object { $_ -match '^ROUTER_ROOT_PASSWORD=' }
     if ($pwLine) { $keepPassword = ($pwLine -split '=', 2)[1] }
 }
+# Same for an opt-in LAN bind (see README) - don't silently drop it.
+$keepGuiBind = ''
+if (Test-Path $EnvFile) {
+    $bindLine = Get-Content $EnvFile | Where-Object { $_ -match '^GUI_BIND=' }
+    if ($bindLine) { $keepGuiBind = ($bindLine -split '=', 2)[1] }
+}
 @"
 ROUTER_IP=$RouterIp
 ROUTER_ROOT_PASSWORD=$keepPassword
@@ -351,6 +357,20 @@ NTFY_TOPIC=$ntfyTopic
 TELEGRAM_BOT_TOKEN=$telegramBotToken
 TELEGRAM_CHAT_ID=$telegramChatId
 "@ | Set-Content -Path $EnvFile -Encoding ascii
+if ($keepGuiBind) { Add-Content -Path $EnvFile -Value "GUI_BIND=$keepGuiBind" -Encoding ascii }
+
+Say 'Unlocking modem bands and installing the 5G mode hook'
+$guiBin = Join-Path $RepoDir 'gui\cb0401-tune-control.exe'
+if (Get-Command go -ErrorAction SilentlyContinue) {
+    Push-Location (Join-Path $RepoDir 'gui')
+    go build -o $guiBin .
+    $buildOk = $LASTEXITCODE -eq 0
+    Pop-Location
+    if (-not $buildOk) { throw 'building the GUI failed' }
+}
+if (-not (Test-Path $guiBin)) { throw "no GUI binary at $guiBin (install Go, or copy a prebuilt one there - see gui/build.sh)" }
+& $guiBin --provision
+if ($LASTEXITCODE -ne 0) { throw 'band unlock / 5G mode hook setup failed' }
 
 Say 'Setup complete. Starting the GUI...'
 & (Join-Path $RepoDir 'gui\start_gui.ps1')
