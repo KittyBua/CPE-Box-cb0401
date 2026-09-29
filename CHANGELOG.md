@@ -64,14 +64,19 @@ Last release under the old *CB0401 Tune + Control* name, before the CPE Box rede
 
 ## v0.3.2 — CA bands, LAN access, Wi‑Fi motion sensing
 
-Aggregates the untagged v0.3.0 / v0.3.1 bumps up through v0.3.2.
-
 - **Aggregated CA bands, SIM/phone rows, SSH multiplexing** in the System card.
 - **`GUI_BIND` for LAN access** plus live operator / network / bands in System.
-- **5G mode selector** (SA+NSA / Force SA / 5G off) replacing the old SA toggle; the hotplug hook no longer overrides the saved mode on reconnect.
-- **Data usage counters** added to the System card (v0.3.1).
 - **Wi‑Fi CSI motion sensing ("Motion map")** — a dedicated Go app replacing the `sensing.sh` / RuView flow: Qualcomm CFR capture (`cfr-trigger`, capture daemon), Widar2.0-style CSI cleanup, Doppler-based presence and a particle-filter tracker, plus a floor-plan editor.
 - **setup** keeps the real root password in `.env` and restores the SSH key after router reboots.
+
+## v0.3.1 — data usage counters
+
+- **Data usage counters** added to the System card.
+
+## v0.3.0 — 5G mode selector
+
+- **5G mode selector** (SA+NSA / Force SA / 5G off) replacing the old SA toggle, with the SA-vs-NSA distinction documented and option labels cleaned up.
+- **Band-write reliability** — the hotplug hook no longer overrides the saved `NR5G_MODE` on every reconnect, and the unreliable band-mismatch verification (which raised false "Mismatch" errors when writing a band subset) was removed.
 
 ## v0.2.0 — CVE-2023-26319 SSH fallback; LTE band prefix fix
 
@@ -79,3 +84,13 @@ Aggregates the untagged v0.3.0 / v0.3.1 bumps up through v0.3.2.
 - **LTE band chips** now use the `B` prefix (B3, B7, B20…) instead of `n`; 5G NR chips keep `n` (n1, n78…).
 - Add an `appVersion` constant.
 - README: rewrite "How SSH access is opened" to document both paths and the cron + firewall-hook persistence mechanism.
+
+## v0.1.0 — initial release
+
+First working version of the toolkit — autonomous setup plus a web GUI for the Xiaomi CB0401 / CB0401V2 5G CPE, driven entirely over SSH to the router.
+
+- **One-command setup + web GUI** to open SSH, tune the modem and unlock bands; the stock firmware's telemetry/junk is cleaned up along the way.
+- **Push notifications for new devices** — event-driven off the dnsmasq lease hook instead of polling, with a `trust` reply command to whitelist a device straight from the alert.
+- **SMS in notifications** — incoming SMS forwarded to ntfy / Telegram, and replying in Telegram texts the sender back; delivery hardened (no silent loss, and one undeliverable message no longer blocks the queue).
+- **Nameless-device identification** — MAC vendor (OUI) lookup plus a reverse mDNS query.
+- **Instant reply handling** — a long-polling listener instead of a 2-minute cron poll.
