@@ -26,9 +26,56 @@ heading belongs to a version; use `##` for the subsections within it.
 
 ## v1.0 — CPE Box redesign
 
-First release under the **CPE Box** name — the full redesign of the panel and
-setup flow: modular web panel (separate pages, light/dark themes), LAN access
-with login at `http://cpe.box`, AT command line and IMEI editor, 160 MHz on
-5 GHz with DFS pre-CAC, real data-usage totals and online/offline detection,
-SMS in the panel, and CI + auto-release of cross-compiled binaries. Full notes:
-<https://github.com/Kreal-exe/CPE-Box-cb0401/releases/tag/v1.0>.
+First release under the **CPE Box** name — the full redesign of the panel and setup flow.
+
+> The repository was renamed from `cb0401-tune-control` to **`CPE-Box-cb0401`**. Old clone URLs still redirect; update your `origin` when convenient: `git remote set-url origin git@github.com:Kreal-exe/CPE-Box-cb0401.git`.
+
+## What's new since v0.3.3
+
+- **Modular web panel** — separate pages (Overview / Cellular / Wi‑Fi / Devices / Messages / Network / Router / Console) instead of one long scrolling page. Light and dark themes; the CPE Box logo takes you back to Overview.
+- **LAN access with login** — panel binds to the LAN by default at `http://cpe.box` (port 80 when free, `:7777` otherwise); other devices sign in with the router's root password, localhost is trusted automatically. Sessions are bound to the current root password. SIM lock banner + PIN/PUK unlock form appear inline if the SIM asks for its PIN after a reboot.
+- **AT command line to the modem** on the Console page — queries and writes straight to `/dev/ttyUSB2` (Quectel RG520N) with preset chips (`AT+QENG="servingcell"`, `AT+QNWPREFCFG=…`, `AT+CGSN`, `AT+CGMR`, `AT+CIMI`).
+- **IMEI editor** on the Cellular page — reads the modem's current IMEI, writes a new one with `AT+EGMR=1,7,…` for carriers that gate SA to whitelisted device IDs. Behind a large "modifies modem, not reversible" warning.
+- **160 MHz on 5 GHz** — setup unblocks the stock DFS channel ban, sets `htmode=HT160`, and turns on `preCACEn=1`. Radar-triggered channel moves swap to a pre-CAC'd backup instantly instead of the 60-second CAC. Re-applied every boot by `router/wifi_dfs_persist.sh`.
+- **Real Data usage totals** — Today and This month come from the modem's own `mobile.flowstat.daily_usage` / `monthly_usage`, the only counters on this SoC that catch traffic the hardware flow-offload path would otherwise hide. Live rate pill + trafficd-ratio-based ↓/↑ split.
+- **Device online/offline is real** — DHCP lease outlives association by hours, so "online" now comes from `ubus call trafficd hw` + `ip neigh show`. Header shows clickable `N online · M offline` chips that filter the list, sorted online-first.
+- **Wi‑Fi form respects your saved choice** — if the driver narrows 160 MHz on ch 36 to 80 MHz on ch 40 because of DFS, the dropdowns still show what you set, with a note naming what's actually running.
+- **Bands via the stock modem daemon** — bands are pushed through `ubus call mobile device`, so the modem persists them across reconnects and reboots.
+- **SMS in the panel** — Messages page shows the SIM's inbox and threads; replying to a forwarded SMS on Telegram sends a real text back.
+- **On-disk cache** for router polls — the panel polls the router once no matter how many people have it open.
+- **CI + auto-release** — every `v*` tag builds cross-compiled binaries automatically.
+
+## What got cleaner in the release itself
+
+- **One binary per OS.** The router-side `sms-reader` (ARMv7) is now embedded inside every host `cpe-box` binary via `//go:embed`; `setup.sh` dumps it with `cpe-box --dump-sms-reader <path>` at install time. The release page no longer carries a separate `sms-reader-linux-armv7` file next to the actual apps.
+- **`build.sh` lives at the repo root**, not `gui/build.sh` — one obvious place to build everything, the same script CI runs.
+- **Smarter first-run URL.** `start.sh` opens `http://cpe.box` (no port) when cpe-box grabs port 80, falls through to `http://cpe.box:7777`, then `http://127.0.0.1:7777` — instead of always opening a loopback IP that refused the connection on the first tick.
+- **Router sanity check after install.** `setup.sh` verifies `boot.sh`, `wifi_dfs_persist.sh`, the cron line and `notify.conf` actually landed under `/etc/crontabs/patches/` — the stock firmware's ramfs `/etc` used to swallow a mid-install error silently.
+- **`start.sh` / `start.ps1` don't skip setup on a stale key.** Both now check that SSH works AND that `/etc/crontabs/patches/boot.sh` exists on the router.
+- **`.env` auto-migration.** `start_gui.sh` / `.ps1` move an existing `GUI_BIND=…:5757` to `:7777` on first run (default port moved in v1.0).
+- **Go version check** — old Go trips a clear error instead of "undefined: min".
+- **`sshpass` install covers Fedora / Arch / openSUSE / Alpine** in addition to apt/brew.
+
+## v0.3.3 — band fix via stock modem daemon (legacy)
+
+Last release under the old *CB0401 Tune + Control* name, before the CPE Box redesign — single-page GUI and `cb0401-tune-control-*` binaries. Prefer v1.0+ unless you specifically need the old UI or asset names.
+
+- Bands are applied through the router's own stock modem daemon (`ubus call mobile device`) instead of raw AT commands, so the modem persists them across reconnects and reboots.
+
+## v0.3.2 — CA bands, LAN access, Wi‑Fi motion sensing
+
+Aggregates the untagged v0.3.0 / v0.3.1 bumps up through v0.3.2.
+
+- **Aggregated CA bands, SIM/phone rows, SSH multiplexing** in the System card.
+- **`GUI_BIND` for LAN access** plus live operator / network / bands in System.
+- **5G mode selector** (SA+NSA / Force SA / 5G off) replacing the old SA toggle; the hotplug hook no longer overrides the saved mode on reconnect.
+- **Data usage counters** added to the System card (v0.3.1).
+- **Wi‑Fi CSI motion sensing ("Motion map")** — a dedicated Go app replacing the `sensing.sh` / RuView flow: Qualcomm CFR capture (`cfr-trigger`, capture daemon), Widar2.0-style CSI cleanup, Doppler-based presence and a particle-filter tracker, plus a floor-plan editor.
+- **setup** keeps the real root password in `.env` and restores the SSH key after router reboots.
+
+## v0.2.0 — CVE-2023-26319 SSH fallback; LTE band prefix fix
+
+- **`bootstrap/open_ssh.sh` / `.ps1`: Path B — SmartController mac-field injection (CVE-2023-26319)**, the same mechanism xmir-patcher's `connect5.py` uses. Tried automatically when Telnet (port 23) is closed (firmware 3.0.100+): writes the SSH-enable + key-install script to `/tmp/e` in 2-char chunks via `scene_setting` / `scene_start_by_crontab` / `scene_delete`, then installs persistence over the now-open SSH connection. `WEB_PASSWORD` overrides the derived default for the web-UI login step.
+- **LTE band chips** now use the `B` prefix (B3, B7, B20…) instead of `n`; 5G NR chips keep `n` (n1, n78…).
+- Add an `appVersion` constant.
+- README: rewrite "How SSH access is opened" to document both paths and the cron + firewall-hook persistence mechanism.
