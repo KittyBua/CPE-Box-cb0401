@@ -45,12 +45,32 @@ jobs:
           fi
           ls -l dist
 
+      - name: Notes
+        run: |
+          # Release body = per-release description + shared install guide + changelog.
+          # The description is the annotated-tag message body, or, if the tag is
+          # lightweight / has no body, the tagged commit's message body. So a good
+          # `git tag -a` / commit message is all a release needs — the install
+          # instructions and compare link are appended here automatically.
+          NOTES=notes.md
+          DESC="$(git for-each-ref "refs/tags/$TAG" --format='%(contents:body)')"
+          [ -z "$DESC" ] && DESC="$(git log -1 --format=%b "$TAG^{commit}")"
+          # Drop git trailers (Co-authored-by / Signed-off-by / ...); $() trims trailing blanks.
+          DESC="$(printf '%s\n' "$DESC" | grep -viE '^[A-Za-z-]+-by:')"
+          [ -n "$DESC" ] && printf '%s\n\n' "$DESC" > "$NOTES" || : > "$NOTES"
+          sed "s|__TAG__|$TAG|g" .github/release-install.md >> "$NOTES"
+          PREV="$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)"
+          [ -n "$PREV" ] && printf '\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
+            "$GITHUB_REPOSITORY" "$PREV" "$TAG" >> "$NOTES"
+
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           LATEST: ${{ github.event_name == 'push' || inputs.latest }}
         run: |
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "CPE Box $TAG" --generate-notes --verify-tag --latest="$LATEST"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "CPE Box $TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" --title "CPE Box $TAG" --notes-file notes.md --verify-tag --latest="$LATEST"
           fi
           gh release upload "$TAG" dist/* --clobber
