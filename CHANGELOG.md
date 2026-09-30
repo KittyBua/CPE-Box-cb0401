@@ -14,11 +14,12 @@ Because the notes live in this file, Markdown headings work as-is — no
 `--cleanup=verbatim` needed on the tag. Everything up to the next `## vX.Y.Z`
 heading belongs to a version; use `##` for the subsections within it.
 
-## v1.0.3 — show a SINR reading of 0 dB
+## v1.0.3 — SINR reading fixes
 
 ## Fixes
 
-- **SINR of exactly 0 dB was shown as `—`.** The signal meters treated any value of exactly 0 as "no reading", which is right for RSRP/RSRQ (never 0 for a live signal) but wrong for SINR, where 0 dB is a valid — if poor — reading. On a weak connection whose SINR sits at 0, the Overview signal card now shows `0 dB` instead of a blank.
+- **SINR of exactly 0 dB was shown as `—`.** The signal meters treated any value of exactly 0 as "no reading", which is right for RSRP/RSRQ (never 0 for a live signal) but wrong for SINR, where 0 dB is a valid — if poor — reading. The Overview signal card now shows `0 dB` instead of a blank.
+- **Missing LTE SINR on some cb0401 v2 firmware.** When the stock daemon's `dump_status` leaves the SINR blank (or a bare 0) for a leg that's actually connected, the panel now backfills it from `AT+QENG="servingcell"` — the authoritative source, where SINR is always present — so the meter fills in instead of staying empty. Only queried when the daemon didn't provide it, so the normal fast path is unchanged.
 
 ## v1.0.2 — SSH robustness on Android, ARFCN in Cellular
 

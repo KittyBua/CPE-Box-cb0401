@@ -436,6 +436,7 @@ func getCellularInfo() (map[string]any, error) {
 	raw, derr := run("ubus call mobile dump_status", 10*time.Second)
 	if derr == nil {
 		if info, perr := parseDumpStatus(raw); perr == nil {
+			fillMissingSINR(info)
 			return info, nil
 		}
 	}
@@ -450,6 +451,58 @@ func getCellularInfo() (map[string]any, error) {
 		return nil, aerr
 	}
 	return info, nil
+}
+
+// fillMissingSINR backfills SINR from the modem's own AT+QENG when the stock
+// daemon's dump_status left it blank or reported a bare 0 for a leg that's
+// actually connected. Some firmware (seen on cb0401 v2 on an LTE-only cell)
+// simply doesn't populate the LTE SINR in dump_status, leaving the Signal card
+// with an empty SINR meter; QENG always carries it. Only queries the modem when
+// something is actually missing, so the fast daemon path is untouched otherwise.
+func fillMissingSINR(info map[string]any) {
+	blank := func(k string) bool {
+		s, _ := info[k].(string)
+		return s == "" || s == "0" || s == "0.0"
+	}
+	present := func(k string) bool {
+		s, _ := info[k].(string)
+		return s != ""
+	}
+	needLTE := present("rsrp") && blank("snr")
+	needNR := present("rsrp_5g") && blank("snr_5g")
+	if !needLTE && !needNR {
+		return
+	}
+	raw, err := atQuery([]string{`AT+QENG="servingcell"`}, 500*time.Millisecond)
+	if err != nil {
+		return
+	}
+	lte, nr := parseQENGSINR(raw)
+	if needLTE && lte != "" {
+		info["snr"] = lte
+	}
+	if needNR && nr != "" {
+		info["snr_5g"] = nr
+	}
+}
+
+// parseQENGSINR pulls the LTE and NR SINR out of an AT+QENG="servingcell" reply.
+// Per the Quectel spec the LTE serving line ends ...,<rsrp>,<rsrq>,<rssi>,<sinr>,
+// so SINR is field 13 after the "LTE"," tag (matching getCellularInfoViaAT's own
+// LTE parse). NR SINR is field 4 on the NR5G-NSA/standalone-SA line, or field 13
+// on the combined "servingcell",...,"NR5G-SA",... form.
+func parseQENGSINR(raw string) (lte, nr string) {
+	if f := qengFields(raw, `"LTE","`); len(f) >= 14 {
+		lte = f[13]
+	}
+	if f := qengFields(raw, `"NR5G-NSA",`); len(f) >= 8 {
+		nr = f[4]
+	} else if f := qengFields(raw, `"NR5G-SA",`); len(f) >= 8 {
+		nr = f[4]
+	} else if f := qengFields(raw, `"servingcell",`); len(f) >= 14 && f[1] == "NR5G-SA" {
+		nr = f[13]
+	}
+	return lte, nr
 }
 
 // loose is a JSON scalar a firmware may report as a quoted string ("-77.0"),

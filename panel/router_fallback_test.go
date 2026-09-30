@@ -131,6 +131,21 @@ func TestParseATCellularSA_realV1(t *testing.T) {
 	}
 }
 
+func TestParseQENGSINR(t *testing.T) {
+	// LTE serving line (real NSA capture): ...,-75,-7,-48,25,... -> SINR field 13 = 25.
+	if lte, _ := parseQENGSINR(`+QENG: "LTE","FDD",262,01,1929500,321,1300,3,5,5,34BA,-75,-7,-48,25,15,100,-`); lte != "25" {
+		t.Errorf("LTE SINR = %q, want 25", lte)
+	}
+	// NR5G-SA combined line (real cb0401 v1 capture): ...,-92,-11,18,... -> SINR field 13 = 18.
+	if _, nr := parseQENGSINR(`+QENG: "servingcell","NOCONN","NR5G-SA","TDD", 202,01,12AA54086,262,15EC,634080,78,7,-92,-11,18,1,-`); nr != "18" {
+		t.Errorf("SA SINR = %q, want 18", nr)
+	}
+	// NR5G-NSA line: SINR is field 4 = 30.
+	if _, nr := parseQENGSINR(`+QENG: "NR5G-NSA",262,01,774,-82,30,-11,431070,1,3,0`); nr != "30" {
+		t.Errorf("NSA SINR = %q, want 30", nr)
+	}
+}
+
 // Real dump_status from the stock daemon on cb0401 v2 (ROM 3.0.57). Signal
 // fields are quoted strings and ci_5g is the "-" placeholder that used to
 // break a json.Number parse — parseDumpStatus (via loose) must handle both.
