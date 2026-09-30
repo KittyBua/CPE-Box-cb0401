@@ -24,6 +24,8 @@ func TestParseATCellular(t *testing.T) {
 		"network_type": "5G NSA",
 		"band_primary": "B3",
 		"band_5g":      "n1",
+		"earfcn":       "1300",
+		"nr_arfcn":     "431070",
 		"apn":          "internet.v6.telekom",
 		"rsrp":         "-75",
 		"rsrq":         "-7",
@@ -79,6 +81,7 @@ func checkSA(t *testing.T, info map[string]any) {
 		"operator": "Telekom.de", "network_type": "5G SA",
 		"band_5g": "n78", "band_primary": "",
 		"rsrp_5g": "-88", "rsrq_5g": "-11", "snr_5g": "25", "pci_5g": "101",
+		"nr_arfcn": "633984",
 		"sim_status": "Ready", "sim_iccid": "89490200002149039092",
 	}
 	for k, want := range wantStr {
@@ -115,6 +118,7 @@ func TestParseATCellularSA_realV1(t *testing.T) {
 	want := map[string]string{
 		"network_type": "5G SA", "band_5g": "n78", "band": "n78",
 		"pci_5g": "262", "rsrp_5g": "-104", "rsrq_5g": "-14", "snr_5g": "19",
+		"nr_arfcn": "634080",
 	}
 	for k, v := range want {
 		if got, _ := info[k].(string); got != v {

@@ -217,8 +217,8 @@ on('cellular', c => {
     ['Operator', c.operator],
     ['Network', c.network_type],
     ['Carriers', c.band ? c.band.replace(/\+/g, ' + ') : ''],
-    ['LTE cell', [c.band_primary, c.pci ? 'PCI ' + c.pci : ''].filter(Boolean).join(' · ')],
-    ['5G cell', [c.band_5g, c.pci_5g ? 'PCI ' + c.pci_5g : ''].filter(Boolean).join(' · ')],
+    ['LTE cell', [c.band_primary, c.pci ? 'PCI ' + c.pci : '', c.earfcn ? 'EARFCN ' + c.earfcn : ''].filter(Boolean).join(' · ')],
+    ['5G cell', [c.band_5g, c.pci_5g ? 'PCI ' + c.pci_5g : '', c.nr_arfcn ? 'ARFCN ' + c.nr_arfcn : ''].filter(Boolean).join(' · ')],
     ['APN', c.apn],
     ['SIM', sim],
   ];

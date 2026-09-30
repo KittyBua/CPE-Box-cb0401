@@ -14,6 +14,20 @@ Because the notes live in this file, Markdown headings work as-is — no
 `--cleanup=verbatim` needed on the tag. Everything up to the next `## vX.Y.Z`
 heading belongs to a version; use `##` for the subsections within it.
 
+## v1.0.2 — SSH robustness on Android, ARFCN in Cellular
+
+## Fixes
+
+- **SSH from cpe-box running on Android (KSWEB / AWebServer / Termux).** cpe-box spawns exactly one external process — `ssh` — and two of its options assumed a desktop layout:
+  - the multiplexing control socket was hardcoded at `/tmp/cpebox_ssh_%C`. Where there is no `/tmp`, the master never came up, so every router call opened its own connection and the router's dropbear closed the racing ones (`Error (255): Connection closed … port 22`). It now lives under `os.TempDir()`, which honours `TMPDIR`.
+  - the key attempt now runs with `BatchMode=yes`, so a rejected key (or a stuck control socket) fails fast with 255 and retries with the password, instead of hanging on an interactive `root@host's password:` prompt until the deadline — which surfaced as `Timed out running …`.
+
+  These only affect where cpe-box itself runs; everything router-side already ran over SSH on the router. `sshpass` (for the password fallback) and an OpenSSH-compatible `ssh` are still required in that environment.
+
+## What's new
+
+- **ARFCN / EARFCN on the Cellular page.** The serving cell's channel number now shows next to *LTE cell* (EARFCN) and *5G cell* (ARFCN). Read from `+QENG` on the AT path and from the `AT+QCAINFO` PCC line on the daemon path, so it works on both cb0401 v1 and v2.
+
 ## v1.0.1 — AT fallback for cb0401 v1
 
 ## What's new since v1.0

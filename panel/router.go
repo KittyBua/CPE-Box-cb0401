@@ -40,6 +40,13 @@ func getenv(k, def string) string {
 }
 
 func sshOpts() []string {
+	// The multiplexing control socket must live somewhere writable. Hardcoding
+	// /tmp breaks where there is no /tmp — e.g. cpe-box running on Android under
+	// KSWEB/Termux, where TMPDIR points elsewhere: the master never comes up,
+	// each call silently opens its own connection, and the router's dropbear
+	// then closes the racing ones ("Connection closed ... port 22"). os.TempDir
+	// honours TMPDIR and only falls back to /tmp.
+	ctrlPath := strings.TrimRight(os.TempDir(), "/") + "/cpebox_ssh_%C"
 	return []string{
 		"-o", "StrictHostKeyChecking=no",
 		// This router regenerates its dropbear host key on every boot (same
@@ -60,7 +67,7 @@ func sshOpts() []string {
 		// one connection warm for 60s so subsequent calls piggy-back on
 		// it instead of racing the key exchange.
 		"-o", "ControlMaster=auto",
-		"-o", "ControlPath=/tmp/cpebox_ssh_%C",
+		"-o", "ControlPath=" + ctrlPath,
 		"-o", "ControlPersist=60",
 	}
 }
@@ -85,7 +92,13 @@ func runSSHRaw(useKey bool, cmd string, timeout time.Duration) (stdout, stderr s
 	var args []string
 	if useKey {
 		name = "ssh"
-		args = append([]string{"-i", keyPath}, sshOpts()...)
+		// BatchMode: never fall back to an interactive password prompt on the
+		// key attempt. Without it a rejected key (or a stuck control socket)
+		// leaves ssh waiting on "root@host's password:" until our deadline,
+		// surfacing as a confusing "Timed out running" instead of a fast 255
+		// that run() can retry with the password. sshpass (below) needs
+		// password auth, so BatchMode is only set here, on the key path.
+		args = append([]string{"-i", keyPath, "-o", "BatchMode=yes"}, sshOpts()...)
 	} else {
 		name = "sshpass"
 		args = append([]string{"-p", routerPass, "ssh"}, sshOpts()...)
@@ -337,15 +350,24 @@ func getModemConfig() (map[string]string, error) {
 	return cfg, nil
 }
 
-var qcaBandRe = regexp.MustCompile(`\+QCAINFO:\s*"(?:PCC|SCC)"[^"]*"(LTE|NR5G)\s+BAND\s+(\d+)"`)
+var (
+	qcaBandRe = regexp.MustCompile(`\+QCAINFO:\s*"(?:PCC|SCC)"[^"]*"(LTE|NR5G)\s+BAND\s+(\d+)"`)
+	// The primary carrier's ARFCN/EARFCN is the first number on the PCC line:
+	//   +QCAINFO: "PCC",634080,12,"NR5G BAND 78",...
+	qcaPccRe = regexp.MustCompile(`\+QCAINFO:\s*"PCC",(\d+),[^"]*"(LTE|NR5G)\s+BAND`)
+)
 
-// aggregatedBands runs AT+QCAINFO and returns the currently attached
-// bands as "B3+B8+n1+n78".  Best-effort — returns "" on any hiccup so
-// the caller can fall back to the primary band from ubus.
-func aggregatedBands() string {
+// aggregatedBands runs AT+QCAINFO and returns the currently attached bands as
+// "B3+B8+n1+n78", plus the primary carrier's ARFCN/EARFCN and its RAT
+// ("LTE"/"NR5G"). Best-effort — empty strings on any hiccup, so the caller can
+// fall back to the primary band/ARFCN from the daemon or QENG.
+func aggregatedBands() (bands, pccArfcn, pccRat string) {
 	raw, err := atQuery([]string{`AT+QCAINFO`}, 2*time.Second)
 	if err != nil {
-		return ""
+		return "", "", ""
+	}
+	if m := qcaPccRe.FindStringSubmatch(raw); m != nil && m[1] != "0" {
+		pccArfcn, pccRat = m[1], m[2]
 	}
 	var out []string
 	seen := map[string]bool{}
@@ -367,7 +389,7 @@ func aggregatedBands() string {
 			out = append(out, key)
 		}
 	}
-	return strings.Join(out, "+")
+	return strings.Join(out, "+"), pccArfcn, pccRat
 }
 
 // getCellularInfo pulls the live serving-cell info from the router's stock
@@ -481,11 +503,22 @@ func parseDumpStatus(raw string) (map[string]any, error) {
 		return nil, routerErrf("Could not parse mobile status: %v", err)
 	}
 	s := parsed.Status
-	// Aggregated CA bands (e.g. "B3+B8+n1+n78") if the modem replies,
-	// otherwise stick with the human-readable primary band from the daemon.
+	// Aggregated CA bands (e.g. "B3+B8+n1+n78") if the modem replies, otherwise
+	// stick with the human-readable primary band from the daemon. The same
+	// QCAINFO call also yields the primary carrier's ARFCN/EARFCN, which the
+	// daemon's dump_status doesn't expose.
 	band := s.CellBand
-	if agg := aggregatedBands(); agg != "" {
-		band = agg
+	earfcn, nrArfcn := "", ""
+	if agg, arf, rat := aggregatedBands(); agg != "" || arf != "" {
+		if agg != "" {
+			band = agg
+		}
+		switch rat {
+		case "LTE":
+			earfcn = arf
+		case "NR5G":
+			nrArfcn = arf
+		}
 	}
 	return map[string]any{
 		"operator":     s.ISP,
@@ -493,6 +526,8 @@ func parseDumpStatus(raw string) (map[string]any, error) {
 		"band":         band,
 		"band_primary": s.CellBand,
 		"band_5g":      s.Cell5GBand,
+		"earfcn":       earfcn,
+		"nr_arfcn":     nrArfcn,
 		"apn":          s.APN,
 		"level":        s.Level,
 		"rsrp":         s.RSRP.String(),
@@ -611,6 +646,7 @@ func parseATCellular(raw string) map[string]any {
 	info := map[string]any{
 		"operator": "", "network_type": "", "band": "", "band_primary": "",
 		"band_5g": "", "apn": "", "level": 0,
+		"earfcn": "", "nr_arfcn": "",
 		"rsrp": "", "rsrq": "", "snr": "", "rssi": "",
 		"rsrp_5g": "", "rsrq_5g": "", "snr_5g": "", "pci": "", "pci_5g": "",
 		"roaming": false, "registered": false, "sim_status": "",
@@ -692,6 +728,7 @@ func parseATCellular(raw string) map[string]any {
 	// Signal + PCI from QENG servingcell (LTE anchor and, in NSA, the NR leg).
 	if f := qengFields(raw, `"LTE","`); len(f) >= 14 {
 		info["pci"] = f[4]
+		info["earfcn"] = f[5]
 		info["rsrp"] = f[10]
 		info["rsrq"] = f[11]
 		info["rssi"] = f[12]
@@ -706,6 +743,7 @@ func parseATCellular(raw string) map[string]any {
 		info["rsrp_5g"] = f[3]
 		info["snr_5g"] = f[4]
 		info["rsrq_5g"] = f[5]
+		info["nr_arfcn"] = f[6]
 		if info["band_5g"] == "" {
 			info["band_5g"] = "n" + f[7]
 		}
@@ -722,12 +760,14 @@ func parseATCellular(raw string) map[string]any {
 		info["rsrp_5g"] = f[3]
 		info["snr_5g"] = f[4]
 		info["rsrq_5g"] = f[5]
+		info["nr_arfcn"] = f[6]
 		if info["band_5g"] == "" {
 			info["band_5g"] = "n" + f[7]
 		}
 		info["level"] = barsFromRSRP(f[3])
 	} else if f := qengFields(raw, `"servingcell",`); len(f) >= 14 && f[1] == "NR5G-SA" {
 		info["pci_5g"] = f[6]
+		info["nr_arfcn"] = f[8]
 		info["rsrp_5g"] = f[11]
 		info["rsrq_5g"] = f[12]
 		info["snr_5g"] = f[13]
@@ -738,8 +778,9 @@ func parseATCellular(raw string) map[string]any {
 	}
 
 	// Aggregated CA bands (same helper the daemon path uses), else compose
-	// from the primary/5G legs.
-	if agg := aggregatedBands(); agg != "" {
+	// from the primary/5G legs. ARFCN/EARFCN here comes from QENG above, so the
+	// QCAINFO ARFCN is ignored.
+	if agg, _, _ := aggregatedBands(); agg != "" {
 		info["band"] = agg
 	} else {
 		bp, _ := info["band_primary"].(string)
