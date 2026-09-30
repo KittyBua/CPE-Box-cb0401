@@ -168,7 +168,9 @@ function quality(metric, v) {
 function meterRow(name, value, unit, metric) {
   const q = metric ? quality(metric, value) : null;
   const v = num(value);
-  const shown = v == null || (metric && v === 0) ? '—' : `${v}<small> ${unit}</small>`;
+  // SINR of exactly 0 dB is a real (poor) reading, not "no data" the way a 0 for
+  // RSRP/RSRQ is (those are never 0 for a live signal), so don't blank it.
+  const shown = v == null || (metric && metric !== 'snr' && v === 0) ? '—' : `${v}<small> ${unit}</small>`;
   return `<div class="meter"><div class="top"><span>${esc(name)}</span><b>${shown}</b></div>
     <div class="track"><div class="fill ${q ? q.cls : ''}" style="width:${q ? q.pct : 0}%"></div></div></div>`;
 }
