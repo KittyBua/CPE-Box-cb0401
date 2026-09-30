@@ -14,6 +14,12 @@ Because the notes live in this file, Markdown headings work as-is — no
 `--cleanup=verbatim` needed on the tag. Everything up to the next `## vX.Y.Z`
 heading belongs to a version; use `##` for the subsections within it.
 
+## v1.0.3 — fix SSH control-socket path on macOS
+
+## Fixes
+
+- **Regression from v1.0.2 on macOS.** v1.0.2 moved the SSH multiplexing control socket to `os.TempDir()`, which on macOS is a long `/var/folders/.../T` path; with OpenSSH's random master suffix on top it blew past the ~104-char unix-domain-socket limit (`unix_listener: path "…" too long for Unix domain socket`), so multiplexing failed and connections were reset (`kex_exchange_identification: read: Connection reset by peer`, error 255). The control socket now prefers `/tmp` (short and present on macOS/Linux) and only falls back to `os.TempDir()` where `/tmp` isn't writable (Android/KSWEB); its name also uses the router IP (`%h`) instead of a 40-char hash (`%C`) for extra headroom.
+
 ## v1.0.2 — SSH robustness on Android, ARFCN in Cellular
 
 ## Fixes

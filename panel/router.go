@@ -39,14 +39,42 @@ func getenv(k, def string) string {
 	return def
 }
 
+var (
+	sshCtrlDirOnce sync.Once
+	sshCtrlDir     string
+)
+
+// sshControlDir picks a short, writable directory for the SSH multiplexing
+// control socket. It prefers /tmp — short and present on macOS and Linux, which
+// keeps the socket path under the ~104-char unix-domain-socket limit that
+// os.TempDir() on macOS (/var/folders/.../T, plus OpenSSH's random master
+// suffix) blows past. It falls back to os.TempDir() only where /tmp isn't a
+// writable directory (e.g. cpe-box running on Android under KSWEB, where there
+// is no /tmp but TMPDIR points somewhere usable). Computed once.
+func sshControlDir() string {
+	sshCtrlDirOnce.Do(func() {
+		for _, d := range []string{"/tmp", os.TempDir()} {
+			if d == "" {
+				continue
+			}
+			if f, err := os.CreateTemp(d, "cpebox_probe"); err == nil {
+				name := f.Name()
+				f.Close()
+				os.Remove(name)
+				sshCtrlDir = strings.TrimRight(d, "/")
+				return
+			}
+		}
+		sshCtrlDir = strings.TrimRight(os.TempDir(), "/")
+	})
+	return sshCtrlDir
+}
+
 func sshOpts() []string {
-	// The multiplexing control socket must live somewhere writable. Hardcoding
-	// /tmp breaks where there is no /tmp — e.g. cpe-box running on Android under
-	// KSWEB/Termux, where TMPDIR points elsewhere: the master never comes up,
-	// each call silently opens its own connection, and the router's dropbear
-	// then closes the racing ones ("Connection closed ... port 22"). os.TempDir
-	// honours TMPDIR and only falls back to /tmp.
-	ctrlPath := strings.TrimRight(os.TempDir(), "/") + "/cpebox_ssh_%C"
+	// %h (the router IP) rather than %C (a 40-char hash): a unix-domain socket
+	// path has a hard ~104-char limit, and OpenSSH appends a ~17-char random
+	// suffix while creating the master, so the shorter name leaves headroom.
+	ctrlPath := sshControlDir() + "/cpebox_%h"
 	return []string{
 		"-o", "StrictHostKeyChecking=no",
 		// This router regenerates its dropbear host key on every boot (same
