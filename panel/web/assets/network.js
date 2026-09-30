@@ -115,8 +115,12 @@ $('#pfList').addEventListener('click', e => {
   const r = arr(Sources.portfwd.data?.list)[Number(b.dataset.pfDel)];
   if (!r || !confirm(`Delete the rule "${r.name}"?`)) return;
   withBusy(b, async () => {
+    // del_vs_rules matches the rule by the exact fields get_vs_rules returned,
+    // so echo protocol back verbatim (it comes as "TCP"/"UDP"/"TCP + UDP"). The
+    // stock UI does the same; sending the numeric form here matched nothing, so
+    // the daemon reported success but left the rule in place.
     await stock('portfwd_del', {
-      name: r.name, service: r.service || '', protocol: protoNum(r.protocol), export: r.export, inport: r.inport, ip: r.ip,
+      name: r.name, service: r.service || '', protocol: r.protocol, export: r.export, inport: r.inport, ip: r.ip,
     }, ['portfwd']);
     toast('Rule deleted');
   }).catch(() => {});

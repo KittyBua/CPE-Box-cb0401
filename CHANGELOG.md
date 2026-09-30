@@ -20,6 +20,7 @@ heading belongs to a version; use `##` for the subsections within it.
 
 - **SINR of exactly 0 dB was shown as `—`.** The signal meters treated any value of exactly 0 as "no reading", which is right for RSRP/RSRQ (never 0 for a live signal) but wrong for SINR, where 0 dB is a valid — if poor — reading. The Overview signal card now shows `0 dB` instead of a blank.
 - **Missing LTE SINR on some cb0401 v2 firmware.** When the stock daemon's `dump_status` leaves the SINR blank (or a bare 0) for a leg that's actually connected, the panel now backfills it from `AT+QENG="servingcell"` — the authoritative source, where SINR is always present — so the meter fills in instead of staying empty. Only queried when the daemon didn't provide it, so the normal fast path is unchanged.
+- **Deleting a port-forwarding rule did nothing.** The delete sent the protocol as a number, but the stock daemon (`del_vs_rules`) matches a rule by the exact protocol string it returned (`TCP`/`UDP`/`TCP + UDP`), so it found no match, reported success and left the rule in place. Delete now echoes the rule's fields back verbatim, matching the stock web UI, so the rule is actually removed.
 
 ## v1.0.2 — SSH robustness on Android, ARFCN in Cellular
 
