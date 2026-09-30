@@ -14,18 +14,12 @@ Because the notes live in this file, Markdown headings work as-is — no
 `--cleanup=verbatim` needed on the tag. Everything up to the next `## vX.Y.Z`
 heading belongs to a version; use `##` for the subsections within it.
 
-## v1.0.3 — fix SSH control-socket path on macOS
-
-## Fixes
-
-- **Regression from v1.0.2 on macOS.** v1.0.2 moved the SSH multiplexing control socket to `os.TempDir()`, which on macOS is a long `/var/folders/.../T` path; with OpenSSH's random master suffix on top it blew past the ~104-char unix-domain-socket limit (`unix_listener: path "…" too long for Unix domain socket`), so multiplexing failed and connections were reset (`kex_exchange_identification: read: Connection reset by peer`, error 255). The control socket now prefers `/tmp` (short and present on macOS/Linux) and only falls back to `os.TempDir()` where `/tmp` isn't writable (Android/KSWEB); its name also uses the router IP (`%h`) instead of a 40-char hash (`%C`) for extra headroom.
-
 ## v1.0.2 — SSH robustness on Android, ARFCN in Cellular
 
 ## Fixes
 
 - **SSH from cpe-box running on Android (KSWEB / AWebServer / Termux).** cpe-box spawns exactly one external process — `ssh` — and two of its options assumed a desktop layout:
-  - the multiplexing control socket was hardcoded at `/tmp/cpebox_ssh_%C`. Where there is no `/tmp`, the master never came up, so every router call opened its own connection and the router's dropbear closed the racing ones (`Error (255): Connection closed … port 22`). It now lives under `os.TempDir()`, which honours `TMPDIR`.
+  - the multiplexing control socket was hardcoded at `/tmp/cpebox_ssh_%C`. Where there is no `/tmp` (Android/KSWEB), the master never came up, so every router call opened its own connection and the router's dropbear closed the racing ones (`Error (255): Connection closed … port 22`). It now prefers `/tmp` and only falls back to `os.TempDir()` where `/tmp` isn't writable, and its name uses the router IP (`%h`) instead of a 40-char hash (`%C`) so the socket path stays under the ~104-char unix-domain-socket limit (which the long `/var/folders/.../T` `os.TempDir()` on macOS would otherwise blow past).
   - the key attempt now runs with `BatchMode=yes`, so a rejected key (or a stuck control socket) fails fast with 255 and retries with the password, instead of hanging on an interactive `root@host's password:` prompt until the deadline — which surfaced as `Timed out running …`.
 
   These only affect where cpe-box itself runs; everything router-side already ran over SSH on the router. `sshpass` (for the password fallback) and an OpenSSH-compatible `ssh` are still required in that environment.
