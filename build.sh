@@ -32,7 +32,7 @@ trap 'printf "" > "$EMBED"; echo "(restored empty embed placeholder)"' EXIT
 # build GOOS GOARCH OUTNAME [GOARM]
 build() {
   echo "==> $3 ($1/$2${4:+ GOARM=$4})"
-  (cd panel && CGO_ENABLED=0 GOOS="$1" GOARCH="$2" ${4:+GOARM=$4} go build -trimpath -ldflags="$LDFLAGS" -o "$OUT_DIR/$3" .)
+  (cd panel && env CGO_ENABLED=0 GOOS="$1" GOARCH="$2" ${4:+GOARM=$4} go build -trimpath -ldflags="$LDFLAGS" -o "$OUT_DIR/$3" .)
 }
 
 build darwin arm64 cpe-box-macos-arm64
