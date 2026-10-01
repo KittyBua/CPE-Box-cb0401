@@ -42,7 +42,8 @@ The binary needs `panel/.env` (router IP, root password, notification token) nex
 ## Assets
 
 - `cpe-box-macos-arm64` / `cpe-box-macos-intel` — macOS Apple Silicon / Intel
-- `cpe-box-linux-amd64` / `cpe-box-linux-arm64` — Linux
+- `cpe-box-linux-amd64` / `cpe-box-linux-arm64` — Linux (64-bit x86 / ARM)
+- `cpe-box-linux-armv7` — Linux 32-bit ARM (ARMv7), e.g. an Android TV box via Termux
 - `cpe-box-windows-amd64.exe` — Windows
 - `SHA256SUMS`
 

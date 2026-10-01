@@ -50,6 +50,7 @@ _gui_asset() {
     Darwin/x86_64) echo cpe-box-macos-intel ;;
     Linux/x86_64) echo cpe-box-linux-amd64 ;;
     Linux/aarch64 | Linux/arm64) echo cpe-box-linux-arm64 ;;
+    Linux/armv7l | Linux/armv8l | Linux/armv6l | Linux/arm) echo cpe-box-linux-armv7 ;;
     *) return 1 ;;
   esac
 }

@@ -14,6 +14,12 @@ Because the notes live in this file, Markdown headings work as-is — no
 `--cleanup=verbatim` needed on the tag. Everything up to the next `## vX.Y.Z`
 heading belongs to a version; use `##` for the subsections within it.
 
+## v1.0.4 — 32-bit ARM (ARMv7) Linux binary
+
+## What's new
+
+- **`cpe-box-linux-armv7`** — a 32-bit ARM (ARMv7) Linux build, so cpe-box runs on devices with a 32-bit userland such as Android TV boxes through Termux. Everything is already CGO-free, so it cross-compiles like the rest (the same `GOARCH=arm GOARM=7` the router-side sms-reader uses). `start.sh` / `setup.sh` pick it up automatically on `armv7l` / `armv8l`.
+
 ## v1.0.3 — SINR reading fixes
 
 ## Fixes
