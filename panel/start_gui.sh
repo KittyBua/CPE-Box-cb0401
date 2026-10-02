@@ -11,7 +11,13 @@ cd "$(dirname "$0")"
 
 BIN="./cpe-box"
 PORT=7777
-PIDFILE="/tmp/cpe_box_gui.pid"
+# Keep the pid/log in a writable temp dir. Hardcoding /tmp breaks on Termux
+# (Android), where there is no writable /tmp but $TMPDIR points to one - without
+# this the pidfile/log redirects fail with "Permission denied" and set -e kills
+# the launch.
+TMPD="${TMPDIR:-/tmp}"
+PIDFILE="$TMPD/cpe_box_gui.pid"
+LOGFILE="$TMPD/cpe_box_gui.log"
 
 . ./fetch.sh
 ensure_gui_bin || exit 1
@@ -43,7 +49,7 @@ if [ -n "$LSOF_PID" ]; then
 fi
 
 echo "Starting the GUI on http://127.0.0.1:$PORT ..."
-"$BIN" > /tmp/cpe_box_gui.log 2>&1 &
+"$BIN" > "$LOGFILE" 2>&1 &
 BIN_PID=$!
 echo $BIN_PID > "$PIDFILE"
 
@@ -76,8 +82,8 @@ open "$URL" 2>/dev/null || xdg-open "$URL" 2>/dev/null || true
 # Stay attached to the GUI process instead of returning to the shell prompt
 # right away - closing this terminal or hitting Ctrl+C stops the GUI too,
 # rather than leaving it running invisibly in the background.
-sed -n '2,6p' /tmp/cpe_box_gui.log 2>/dev/null
-echo "GUI is running (PID $BIN_PID), log: /tmp/cpe_box_gui.log"
+sed -n '2,6p' "$LOGFILE" 2>/dev/null
+echo "GUI is running (PID $BIN_PID), log: $LOGFILE"
 echo "Press Ctrl+C to stop it."
 trap 'kill "$BIN_PID" 2>/dev/null; exit 0' INT TERM
 wait "$BIN_PID"

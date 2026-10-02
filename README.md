@@ -223,6 +223,19 @@ cd CPE-Box-cb0401
 powershell -ExecutionPolicy Bypass -File start.ps1
 ```
 
+### Android (Termux)
+
+cpe-box runs on Android under [Termux](https://termux.dev/) too — handy for an always-on box (e.g. an Android TV box) rather than keeping a laptop or phone awake. Install the prerequisites once, then it's the same `./start.sh` flow:
+
+```bash
+pkg install -y git openssh sshpass curl
+git clone https://github.com/Kreal-exe/CPE-Box-cb0401
+cd CPE-Box-cb0401
+./start.sh
+```
+
+No `root`, and no Go needed — the prebuilt binary is fetched automatically (`cpe-box-linux-armv7` on 32-bit devices, `-arm64` on 64-bit). Thanks to [@KittyBua](https://github.com/KittyBua) for testing this across Termux, proot-Ubuntu/Debian and several TV boxes.
+
 `start.sh`/`start.ps1` is the one command for everything, every time: it checks whether the SSH key already works against the router, and either runs the full `setup.sh`/`setup.ps1` (first run) or skips straight to launching the panel (every run after that) — no need to remember which script to use.
 
 The full setup opens SSH automatically (see [How SSH access is opened](#how-ssh-access-is-opened)); if that doesn't apply to your router, it asks for the router's SSH password exactly once, during the one-time key installation step — enter the derived default password from that section, or whatever you've since changed it to. Every step after that uses the key. It will also ask you to pick ntfy.sh or Telegram for notifications (see [Push notifications & remote commands](#push-notifications--remote-commands-optional)); for a non-interactive run, set `NOTIFY_BACKEND=telegram` plus `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` (or leave `NOTIFY_BACKEND` unset for ntfy) as environment variables beforehand.

@@ -14,6 +14,12 @@ Because the notes live in this file, Markdown headings work as-is — no
 `--cleanup=verbatim` needed on the tag. Everything up to the next `## vX.Y.Z`
 heading belongs to a version; use `##` for the subsections within it.
 
+## v1.0.5 — run cleanly on Android (Termux)
+
+## Fixes
+
+- **`start_gui.sh` failed to launch on Termux.** It wrote its pid/log to a hardcoded `/tmp`, which Android/Termux has no writable copy of, so the redirects failed with "Permission denied" and `set -e` aborted the launch (people worked around it by starting the binary by hand). It now uses `$TMPDIR` (falling back to `/tmp`), so the normal `./start.sh` runs end-to-end on an Android box. A short **Android (Termux)** section was added to the README. Thanks to [@KittyBua](https://github.com/KittyBua) for the reports and testing.
+
 ## v1.0.4 — 32-bit ARM (ARMv7) Linux binary
 
 ## What's new
