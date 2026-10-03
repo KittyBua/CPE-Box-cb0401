@@ -63,10 +63,14 @@ for ($i = 0; $i -lt 20; $i++) {
     Start-Sleep -Milliseconds 300
 }
 
-# http://cpe.box, always. cpe-box registers the .box name in the router's
-# DNS on startup and grabs port 80 for the LAN when it can, so the friendly
-# URL is what the user should see - no port suffix, no loopback IP.
-$Url = 'http://cpe.box'
+# Prefer http://cpe.box (no port) only when cpe-box actually grabbed port 80
+# for the LAN; a non-admin host can't bind port 80, so cpe-box stays on $Port
+# and that URL would open a blank page - open http://cpe.box:$Port there.
+$Url = "http://cpe.box:$Port"
+try {
+    $r80 = Invoke-WebRequest -Uri 'http://127.0.0.1:80/' -UseBasicParsing -TimeoutSec 1
+    if ($r80.StatusCode -eq 200) { $Url = 'http://cpe.box' }
+} catch {}
 Write-Host "Opening $Url"
 Start-Process $Url
 

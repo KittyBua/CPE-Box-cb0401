@@ -68,14 +68,17 @@ for i in $(seq 1 20); do
   sleep 0.3
 done
 
-# http://cpe.box, always. cpe-box registers the .box name in the router's
-# DNS on startup and grabs port 80 for the LAN when it can, so the friendly
-# URL is what the user should see - no port suffix, no loopback IP. If
-# something's wrong (router isn't up yet on a very first run, port 80
-# couldn't be bound), the app's own console output tells them the exact
-# alternate URL to try; we still open cpe.box so we don't teach them an
-# uglier URL by default.
-URL="http://cpe.box"
+# Prefer the friendly http://cpe.box (no port suffix) only when cpe-box
+# actually grabbed port 80 for the LAN. On a non-root host (e.g. Android under
+# Termux) the port-80 bind is denied, so cpe-box stays on $PORT only and
+# http://cpe.box would open a dead, blank page - open http://cpe.box:$PORT
+# there instead. cpe-box registers the .box name in the router's DNS; until
+# that's up its own console output still names the loopback URL to use.
+if curl -s -o /dev/null "http://127.0.0.1:80/"; then
+  URL="http://cpe.box"
+else
+  URL="http://cpe.box:$PORT"
+fi
 echo "Opening $URL"
 open "$URL" 2>/dev/null || xdg-open "$URL" 2>/dev/null || true
 

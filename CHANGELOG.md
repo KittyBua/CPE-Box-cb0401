@@ -19,6 +19,7 @@ heading belongs to a version; use `##` for the subsections within it.
 ## Fixes
 
 - **`start_gui.sh` failed to launch on Termux.** It wrote its pid/log to a hardcoded `/tmp`, which Android/Termux has no writable copy of, so the redirects failed with "Permission denied" and `set -e` aborted the launch (people worked around it by starting the binary by hand). It now uses `$TMPDIR` (falling back to `/tmp`), so the normal `./start.sh` runs end-to-end on an Android box. A short **Android (Termux)** section was added to the README. Thanks to [@KittyBua](https://github.com/KittyBua) for the reports and testing.
+- **Blank page opened on a non-root host.** `start_gui.sh` / `start_gui.ps1` always opened `http://cpe.box` (port 80), but on a host that can't bind port 80 (e.g. Android/Termux, non-admin) cpe-box only serves `$PORT`, so that was a dead page. The launcher now checks whether port 80 is actually up and opens `http://cpe.box:7777` when it isn't.
 
 ## v1.0.4 — 32-bit ARM (ARMv7) Linux binary
 
