@@ -39,13 +39,7 @@ build darwin arm64 cpe-box-macos-arm64
 build darwin amd64 cpe-box-macos-intel
 build linux amd64 cpe-box-linux-amd64
 build linux arm64 cpe-box-linux-arm64
-# The 32-bit ARM target is built for GOOS=android, not linux: its audience is
-# Android TV boxes under Termux, where the platform seccomp filter kills the
-# newer faccessat2 syscall (used by os/exec when launching ssh) with SIGSYS -
-# "bad system call" - crashing a GOOS=linux build. The android target makes Go
-# fall back to the older faccessat, and the result is still a plain Linux ELF
-# that also runs on real 32-bit ARM Linux.
-build android arm cpe-box-linux-armv7 7
+build linux arm cpe-box-linux-armv7 7
 build windows amd64 cpe-box-windows-amd64.exe
 
 (cd "$OUT_DIR" && { shasum -a 256 cpe-box-* 2>/dev/null || sha256sum cpe-box-*; } > SHA256SUMS)

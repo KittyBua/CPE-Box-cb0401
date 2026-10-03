@@ -29,7 +29,11 @@ heading belongs to a version; use `##` for the subsections within it.
 
 ## Fixes
 
-- **The ARMv7 binary crashed with `SIGSYS: bad system call` on Android.** The first v1.0.4 build targeted `GOOS=linux`, so Go's `os/exec` (used to launch `ssh`) called the newer `faccessat2` syscall; Android's seccomp filter kills that call with SIGSYS instead of returning an error, so the binary crashed before it could do anything. That took out the whole first-run flow with it: `setup.sh`'s band-unlock step ran `cpe-box --provision`, which crashed → `ERROR: band unlock / 5G mode hook setup failed`, so setup never finished — the router-side `boot.sh` marker was missing (so `start.sh` kept re-running the full setup, re-asking for the ntfy/Telegram choice) and `.env` was left without the real root password (so the panel rejected the correct one). The ARMv7 binary is now built with `GOOS=android`, which falls back to the older `faccessat`; it's still a plain Linux ELF and also runs on real 32-bit ARM Linux.
+- **A failed first-run step no longer aborts setup.** `setup.sh`'s band-unlock step (`cpe-box --provision`) was fatal (`|| die`). If it failed, setup stopped there — the router-side `boot.sh` marker could be missing, so `start.sh` kept re-running the full setup (re-asking for the ntfy/Telegram backend), and `.env` could be left with the placeholder password (so the panel rejected the correct root password). It's now non-fatal: SSH, the router-side hooks and the saved password are already done by that point, so a `--provision` hiccup just prints a warning and setup finishes; bands can be set from **Cellular → Bands**.
+
+## Known issue
+
+- **The prebuilt ARMv7 binary can crash with `SIGSYS: bad system call` under a strict Android seccomp filter** (seen on some Android TV boxes in bare Termux): Go uses the `faccessat2` syscall when launching `ssh`, and the filter kills it instead of letting Go fall back. A `GOOS=android` build would avoid it but needs the CGO/NDK toolchain (this binary is intentionally CGO-free), so for now the workaround is to run under **proot-Ubuntu/Debian** or to build from source in Termux (`pkg install golang`) — see the README's **Android (Termux)** section. The binary is unaffected under proot and on ordinary 32-bit ARM Linux.
 
 ## v1.0.3 — SINR reading fixes
 

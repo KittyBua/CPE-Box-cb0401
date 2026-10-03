@@ -356,7 +356,14 @@ chmod 600 "$ENV_FILE"
 
 say "Unlocking modem bands and installing the 5G mode hook"
 GUI_BIN="$REPO_DIR/panel/cpe-box"
-"$GUI_BIN" --provision || die "band unlock / 5G mode hook setup failed"
+# Non-fatal: everything that matters (SSH, the router-side hooks, the saved
+# root password in .env) is already done by this point. If --provision can't
+# finish - the modem is mid-reconnect, or the binary itself can't run here
+# (e.g. the prebuilt crashes under a restrictive Android seccomp) - don't abort
+# setup, or the next run would redo the whole thing (re-asking the notify
+# backend) and .env could be left without the real password. Bands can be set
+# from Cellular > Bands in the panel.
+"$GUI_BIN" --provision || echo "WARNING: band unlock / 5G mode hook didn't complete - set bands from Cellular > Bands in the panel once the modem is idle."
 
 say "Setup complete. Starting the GUI..."
 exec "$REPO_DIR/panel/start_gui.sh"
