@@ -99,9 +99,10 @@ func sshOpts() []string {
 	// unix-domain path has a ~104-char limit and OpenSSH appends a ~17-char
 	// random suffix while creating the master.
 	if runtime.GOOS != "windows" {
+		ctrlPath := sshControlDir() + "/cpebox_%h"
 		opts = append(opts,
 			"-o", "ControlMaster=auto",
-			"-o", "ControlPath=" + sshControlDir() + "/cpebox_%h",
+			"-o", "ControlPath=" + ctrlPath,
 			"-o", "ControlPersist=60",
 		)
 	}
