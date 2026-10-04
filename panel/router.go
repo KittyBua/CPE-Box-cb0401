@@ -1409,29 +1409,55 @@ if [ ! -e "$HOOK_DEST" ] || [ ! -f "$HOOK_DEST" ]; then
     ln -sf "$HOOK_SRC" "$HOOK_DEST"
 fi
 
+# Re-assert the saved 5G mode at boot too (detached), not only from the ifup
+# hook: some firmware (cb0401 v1) names the modem interface differently, so the
+# hook never fires there. Let the stock daemon bring the link up first, then
+# apply (twice, in case it set its own mode in between).
+APPLY="/data/custom/hooks/apply-5g-mode.sh"
+if [ -x "$APPLY" ]; then
+    if command -v setsid >/dev/null 2>&1; then
+        setsid sh -c "sleep 30; $APPLY; sleep 25; $APPLY" >/dev/null 2>&1 </dev/null &
+    else
+        ( sleep 30; $APPLY; sleep 25; $APPLY ) >/dev/null 2>&1 </dev/null &
+    fi
+fi
+
 echo "5g mode hook installed" > /tmp/5g_band_patch.log
 `
 	// Goes through microcom (and its port lock) like the stock at_cmd.sh,
-	// so it can't interleave with the stock daemon's own AT traffic.
+	// so it can't interleave with the stock daemon's own AT traffic. The ifup
+	// gate matches the modem WAN under the names seen across cb0401 firmware
+	// (v2 uses wan_2; v1 differs), and the boot patch above covers the rest.
 	modeHookScript = `#!/bin/sh
-# cpe-box: router hook v3 (5G mode + LEDs; bands are kept by the stock mobile daemon)
+# cpe-box: router hook v4 (5G mode + LEDs; bands are kept by the stock mobile daemon)
 [ "$ACTION" = "ifup" ] || exit 0
-[ "$INTERFACE" = "wan_2" ] || exit 0
-NR5G_MODE=""
+case "$INTERFACE" in wan_2|wan|wwan|wwan0|modem_wan|5g_wan) ;; *) exit 0 ;; esac
 LEDS=""
 [ -f /data/custom/hooks/band_prefs.conf ] && . /data/custom/hooks/band_prefs.conf
-if [ -n "$NR5G_MODE" ]; then
-  L=/var/lock/LCK..ttyUSB2
-  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -e $L ] || break; usleep 250000; done
-  printf 'AT+QNWPREFCFG="nr5g_disable_mode",%s\r' "$NR5G_MODE" | busybox microcom /dev/ttyUSB2 >/dev/null 2>&1 & P=$!
-  usleep 800000
-  kill $P 2>/dev/null
-fi
+[ -x /data/custom/hooks/apply-5g-mode.sh ] && /data/custom/hooks/apply-5g-mode.sh
 if [ "$LEDS" = "0" ]; then
 ` + ledsOffScript + `
 fi
 `
-	modeHookMarker      = "router hook v3"
+	// Applies the saved 5G mode (nr5g_disable_mode) to the modem, waiting for
+	// the port and the stock daemon's port lock first. Shared by the ifup hook
+	// and the boot-time re-assert so the mode survives a reboot even where the
+	// hook can't fire. Goes through microcom like the stock at_cmd.sh.
+	modeApplyScript = `#!/bin/sh
+[ -f /data/custom/hooks/band_prefs.conf ] && . /data/custom/hooks/band_prefs.conf
+[ -n "$NR5G_MODE" ] || exit 0
+i=0
+while [ $i -lt 60 ]; do [ -e /dev/ttyUSB2 ] && break; sleep 2; i=$((i+1)); done
+[ -e /dev/ttyUSB2 ] || exit 0
+L=/var/lock/LCK..ttyUSB2
+n=0
+while [ -e "$L" ] && [ $n -lt 20 ]; do usleep 250000; n=$((n+1)); done
+printf 'AT+QNWPREFCFG="nr5g_disable_mode",%s\r' "$NR5G_MODE" | busybox microcom /dev/ttyUSB2 >/dev/null 2>&1 &
+P=$!
+usleep 800000
+kill $P 2>/dev/null
+`
+	modeHookMarker      = "router hook v4"
 	modeFirewallSnippet = `
 config include 'auto_5g_band_patch'
 	option type 'script'
@@ -1440,6 +1466,7 @@ config include 'auto_5g_band_patch'
 `
 	modePatchPath = "/data/etc/crontabs/patches/5g_band_patch.sh"
 	modeHookPath  = "/data/custom/hooks/99-set-5g-bands"
+	modeApplyPath = "/data/custom/hooks/apply-5g-mode.sh"
 	modePrefsPath = "/data/custom/hooks/band_prefs.conf"
 )
 
@@ -1451,7 +1478,7 @@ func installModeHook() error {
 	if _, err := run("mkdir -p /data/etc/crontabs/patches /data/custom/hooks /etc/hotplug.d/iface", 10*time.Second); err != nil {
 		return err
 	}
-	for path, content := range map[string]string{modePatchPath: modePatchScript, modeHookPath: modeHookScript} {
+	for path, content := range map[string]string{modePatchPath: modePatchScript, modeHookPath: modeHookScript, modeApplyPath: modeApplyScript} {
 		b64 := base64.StdEncoding.EncodeToString([]byte(content))
 		if _, err := run(fmt.Sprintf("echo %s | base64 -d > %s && chmod 755 %s", b64, path, path), 10*time.Second); err != nil {
 			return err

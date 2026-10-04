@@ -14,15 +14,23 @@ Because the notes live in this file, Markdown headings work as-is — no
 `--cleanup=verbatim` needed on the tag. Everything up to the next `## vX.Y.Z`
 heading belongs to a version; use `##` for the subsections within it.
 
+## v1.0.7 — correct 5G band on cb0401 v1
+
+## Fixes
+
+- **5G band shows "n0" on cb0401 v1 (ROM 3.0.116).** That firmware reports the NR band as `0` over AT even on a live cell, while the ARFCN is correct. The 5G cell row and the Carriers list now derive the band from the NR-ARFCN (3GPP TS 38.104), so an n1 cell on ARFCN 427730 shows **n1** instead of a bogus **n0** — matching the stock UI. Works for any band (n28 in another location, etc.), not just n1.
+- **SA/NSA mode now survives a reboot on cb0401 v1.** The mode (`nr5g_disable_mode`) was only re-applied from a hotplug hook bound to the `wan_2` interface, which v1 firmware doesn't use, so "Auto" reverted after a reboot. The hook now matches the modem WAN under the other names too, and a boot-time re-assert applies the saved mode even when no hook fires.
+- **Home Assistant add-on updates reliably.** The add-on refreshed its copy with `git pull --ff-only`, which silently kept the old code whenever upstream history was rewritten — so a fix could ship but never reach an installed add-on. It now fetches and hard-resets to the latest upstream. Your `.env` and SSH key live outside git and are untouched.
+
+## Also in this release
+
+A cumulative build: a fresh install or add-on update now carries everything since v1.0.3 — the Windows SSH fix (v1.0.4), the Android/Termux fix (v1.0.5) and the Home Assistant OS add-on (v1.0.6). Prebuilt binaries for Linux (amd64 / arm64 / armv7, the armv7 one also covers Android via Termux), macOS (Intel / Apple Silicon) and Windows are attached to every release.
+
 ## v1.0.6 — Home Assistant OS add-on
 
 ## What's new
 
 - **Home Assistant OS add-on.** cpe-box can now run as an always-on Home Assistant add-on — handy when a HA OS box is the only machine on 24/7. In Home Assistant: **Settings → Add-ons → Add-on Store → ⋮ → Repositories**, add `https://github.com/Kreal-exe/CPE-Box-cb0401`, install **CPE Box**, set the router password in the options, start it, and open `http://<home-assistant>:7777`. It runs the normal `setup.sh` flow non-interactively and keeps its state in the add-on's persistent `/data`. (On HA **Container** or **Core** you have a normal Linux host — use `./start.sh` there instead.) Lives in `homeassistant/`.
-
-## Fixes
-
-- **5G band shows "n0" on cb0401 v1 (ROM 3.0.116).** That firmware reports the NR band as `0` over AT even on a live cell, while the ARFCN is correct. The 5G cell row and the Carriers list now derive the band from the NR-ARFCN (3GPP TS 38.104), so an n1 cell on ARFCN 427730 shows **n1** instead of a bogus **n0** — matching the stock UI.
 
 ## v1.0.5 — run cleanly on Android (Termux)
 

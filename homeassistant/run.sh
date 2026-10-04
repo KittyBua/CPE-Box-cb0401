@@ -22,7 +22,15 @@ fi
 APP=/data/CPE-Box-cb0401
 if [ -d "$APP/.git" ]; then
   bashio::log.info "Updating CPE Box..."
-  git -C "$APP" pull --ff-only --quiet || bashio::log.warning "git pull failed; using the existing copy."
+  # Hard-reset to the latest upstream rather than a --ff-only pull: that keeps
+  # working across a rewritten/force-pushed history (otherwise a fix can ship
+  # but never reach the installed copy). .env and the SSH key are untracked, so
+  # they're left untouched.
+  if git -C "$APP" fetch --depth 1 origin 2>/dev/null; then
+    git -C "$APP" reset --hard FETCH_HEAD >/dev/null 2>&1 || bashio::log.warning "update checkout failed; keeping the existing copy."
+  else
+    bashio::log.warning "git fetch failed; keeping the existing copy."
+  fi
 else
   bashio::log.info "Cloning CPE Box..."
   git clone --depth 1 https://github.com/Kreal-exe/CPE-Box-cb0401 "$APP"
