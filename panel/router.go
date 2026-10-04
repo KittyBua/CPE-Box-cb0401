@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -71,11 +72,7 @@ func sshControlDir() string {
 }
 
 func sshOpts() []string {
-	// %h (the router IP) rather than %C (a 40-char hash): a unix-domain socket
-	// path has a hard ~104-char limit, and OpenSSH appends a ~17-char random
-	// suffix while creating the master, so the shorter name leaves headroom.
-	ctrlPath := sshControlDir() + "/cpebox_%h"
-	return []string{
+	opts := []string{
 		"-o", "StrictHostKeyChecking=no",
 		// This router regenerates its dropbear host key on every boot (same
 		// ramfs /etc as everything else that doesn't persist) - checking it
@@ -87,17 +84,28 @@ func sshOpts() []string {
 		"-o", "HostKeyAlgorithms=+ssh-rsa",
 		"-o", "PubkeyAcceptedAlgorithms=+ssh-rsa",
 		"-o", "ConnectTimeout=5",
-		// Multiplex over one TCP connection: the router's dropbear is
-		// happy to open a new SSH session on an existing connection but
-		// gets angry ("kex_exchange_identification: Connection reset by
-		// peer") when several handlers on this side each try to open a
-		// fresh connection at the same time. ControlMaster=auto keeps
-		// one connection warm for 60s so subsequent calls piggy-back on
-		// it instead of racing the key exchange.
-		"-o", "ControlMaster=auto",
-		"-o", "ControlPath=" + ctrlPath,
-		"-o", "ControlPersist=60",
 	}
+	// Connection multiplexing uses a Unix-domain control socket, which Windows
+	// OpenSSH doesn't support: it fails every command with "getsockname failed:
+	// Not a socket". So only enable it off Windows; Windows opens a fresh
+	// connection per call instead.
+	//
+	// Where it is used: the router's dropbear is happy to open a new SSH
+	// session on an existing connection but gets angry ("kex_exchange_
+	// identification: Connection reset by peer") when several handlers each try
+	// to open a fresh connection at the same time. ControlMaster=auto keeps one
+	// connection warm for 60s so subsequent calls piggy-back on it. The socket
+	// name uses %h (the router IP) rather than %C (a 40-char hash) because a
+	// unix-domain path has a ~104-char limit and OpenSSH appends a ~17-char
+	// random suffix while creating the master.
+	if runtime.GOOS != "windows" {
+		opts = append(opts,
+			"-o", "ControlMaster=auto",
+			"-o", "ControlPath=" + sshControlDir() + "/cpebox_%h",
+			"-o", "ControlPersist=60",
+		)
+	}
+	return opts
 }
 
 // RouterError is returned for anything that should be shown to the user as
