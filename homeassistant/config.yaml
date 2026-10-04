@@ -1,0 +1,24 @@
+name: CPE Box
+version: "1.0.6"
+slug: cpe_box
+description: Local panel for the Xiaomi CB0401 / CB0401V2 5G CPE, driven over SSH to the router. Opens on port 7777.
+url: https://github.com/Kreal-exe/CPE-Box-cb0401
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: application
+boot: manual
+host_network: true
+options:
+  router_ip: "192.168.31.1"
+  router_password: ""
+  notify_backend: ntfy
+  telegram_bot_token: ""
+  telegram_chat_id: ""
+schema:
+  router_ip: str
+  router_password: password
+  notify_backend: list(ntfy|telegram)
+  telegram_bot_token: str?
+  telegram_chat_id: str?

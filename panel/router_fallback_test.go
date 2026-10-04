@@ -146,6 +146,50 @@ func TestParseQENGSINR(t *testing.T) {
 	}
 }
 
+func TestNrBandFromArfcn(t *testing.T) {
+	// issue #1: 427730 is a live n1 cell the modem labels band 0; the rest
+	// spot-check the table and that junk input (out of range, a stray
+	// RSRQ-looking value, empty) resolves to 0 rather than a wrong band.
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"427730", 1},
+		{"431070", 1},
+		{"633984", 78},
+		{"361000", 3},
+		{"185000", 8},
+		{"162000", 20},
+		{"999999", 0},
+		{"0", 0},
+		{"", 0},
+		{"-11", 0},
+	}
+	for _, c := range cases {
+		if got := nrBandFromArfcn(c.in); got != c.want {
+			t.Errorf("nrBandFromArfcn(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+// cb0401 v1 (ROM 3.0.116, issue #1) reports the NR band as 0 on a live NSA n1
+// cell while the ARFCN (427730) is correct. band_5g must come out n1, not the
+// bogus "n0" the raw band field would give.
+func TestParseATCellularNSA_band0FromArfcn(t *testing.T) {
+	raw := "AT+QNWINFO\r\n+QNWINFO: \"FDD LTE\",\"26201\",\"LTE BAND 3\",1300\r\n\r\nOK\r\n" +
+		"AT+QENG=\"servingcell\"\r\n" +
+		"+QENG: \"servingcell\",\"CONN\"\r\n" +
+		"+QENG: \"LTE\",\"FDD\",262,01,1929500,321,1300,3,5,5,34BA,-75,-7,-48,25,15,100,-\r\n" +
+		"+QENG: \"NR5G-NSA\",262,01,0,-85,25,-11,427730,0,3,0\r\n\r\nOK\r\n"
+	info := parseATCellular(raw)
+	if got, _ := info["band_5g"].(string); got != "n1" {
+		t.Errorf("band_5g = %q, want n1", got)
+	}
+	if got, _ := info["nr_arfcn"].(string); got != "427730" {
+		t.Errorf("nr_arfcn = %q, want 427730", got)
+	}
+}
+
 // Real dump_status from the stock daemon on cb0401 v2 (ROM 3.0.57). Signal
 // fields are quoted strings and ci_5g is the "-" placeholder that used to
 // break a json.Number parse — parseDumpStatus (via loose) must handle both.

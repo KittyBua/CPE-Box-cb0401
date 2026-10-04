@@ -388,7 +388,7 @@ func getModemConfig() (map[string]string, error) {
 }
 
 var (
-	qcaBandRe = regexp.MustCompile(`\+QCAINFO:\s*"(?:PCC|SCC)"[^"]*"(LTE|NR5G)\s+BAND\s+(\d+)"`)
+	qcaBandRe = regexp.MustCompile(`\+QCAINFO:\s*"(?:PCC|SCC)",(\d+),[^"]*"(LTE|NR5G)\s+BAND\s+(\d+)"`)
 	// The primary carrier's ARFCN/EARFCN is the first number on the PCC line:
 	//   +QCAINFO: "PCC",634080,12,"NR5G BAND 78",...
 	qcaPccRe = regexp.MustCompile(`\+QCAINFO:\s*"PCC",(\d+),[^"]*"(LTE|NR5G)\s+BAND`)
@@ -409,24 +409,91 @@ func aggregatedBands() (bands, pccArfcn, pccRat string) {
 	var out []string
 	seen := map[string]bool{}
 	for _, m := range qcaBandRe.FindAllStringSubmatch(raw, -1) {
-		if m[2] == "0" {
-			// No band 0 exists; some cb0401 v1 firmware reports it as a
-			// placeholder on a weak/NOCONN SA carrier, which used to surface
-			// as a bogus "n0" in the Carriers row. Skip it and let the caller
-			// fall back to the band from QNWINFO/QENG.
-			continue
-		}
+		arfcn, rat, band := m[1], m[2], m[3]
 		prefix := "B"
-		if m[1] == "NR5G" {
+		if rat == "NR5G" {
 			prefix = "n"
 		}
-		key := prefix + m[2]
+		if band == "0" {
+			// No band 0 exists; cb0401 v1 firmware reports it as a placeholder
+			// on some NR carriers while the ARFCN is still valid. Recover the
+			// band from the ARFCN (as the stock UI does); if that fails, skip
+			// it and let the caller fall back to QNWINFO/QENG rather than
+			// surfacing a bogus "n0" in the Carriers row.
+			if rat == "NR5G" {
+				if b := nrBandFromArfcn(arfcn); b != 0 {
+					band = strconv.Itoa(b)
+				}
+			}
+			if band == "0" {
+				continue
+			}
+		}
+		key := prefix + band
 		if !seen[key] {
 			seen[key] = true
 			out = append(out, key)
 		}
 	}
 	return strings.Join(out, "+"), pccArfcn, pccRat
+}
+
+// nrArfcnBands maps NR-ARFCN (SSB/DL) ranges to their 3GPP band number
+// (TS 38.104 Table 5.4.2.3-1, FR1). Ranges overlap between some bands, so the
+// list is ordered to resolve an overlap toward the band this hardware is far
+// more likely to be on (n1 before n66, n78 before n77, FDD before the wide
+// TDD n41). Only used to recover a band the modem reports as 0.
+var nrArfcnBands = []struct{ lo, hi, band int }{
+	{422000, 434000, 1},
+	{361000, 376000, 3},
+	{173800, 178800, 5},
+	{524000, 538000, 7},
+	{185000, 192000, 8},
+	{145800, 149200, 12},
+	{151600, 160600, 28},
+	{158200, 164200, 20},
+	{376000, 384000, 39},
+	{460000, 480000, 40},
+	{514000, 524000, 38},
+	{499200, 513999, 41},
+	{123400, 130400, 71},
+	{620000, 653333, 78},
+	{653334, 680000, 77},
+	{693334, 733333, 79},
+	{399000, 404000, 70},
+	{434000, 440000, 66},
+}
+
+// nrBandFromArfcn returns the NR band number for an NR-ARFCN, or 0 if none
+// matches (bad input or an ARFCN outside the ranges above).
+func nrBandFromArfcn(s string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	for _, r := range nrArfcnBands {
+		if n >= r.lo && n <= r.hi {
+			return r.band
+		}
+	}
+	return 0
+}
+
+// nrBandLabel formats a 5G band for display ("n1"). cb0401 v1 firmware
+// (ROM 3.0.116) sometimes reports the NR band field as 0 on a live cell while
+// the ARFCN is correct — the stock UI derives the band from the ARFCN, so do
+// the same here rather than showing a bogus "n0".
+func nrBandLabel(band, arfcn string) string {
+	if band != "" && band != "0" {
+		return "n" + band
+	}
+	if b := nrBandFromArfcn(arfcn); b != 0 {
+		return "n" + strconv.Itoa(b)
+	}
+	if band != "" {
+		return "n" + band
+	}
+	return ""
 }
 
 // getCellularInfo pulls the live serving-cell info from the router's stock
@@ -835,7 +902,7 @@ func parseATCellular(raw string) map[string]any {
 		info["rsrq_5g"] = f[5]
 		info["nr_arfcn"] = f[6]
 		if info["band_5g"] == "" {
-			info["band_5g"] = "n" + f[7]
+			info["band_5g"] = nrBandLabel(f[7], f[6])
 		}
 	}
 	// NR5G-SA (no LTE anchor). This firmware reports each RAT on its own +QENG
@@ -852,7 +919,7 @@ func parseATCellular(raw string) map[string]any {
 		info["rsrq_5g"] = f[5]
 		info["nr_arfcn"] = f[6]
 		if info["band_5g"] == "" {
-			info["band_5g"] = "n" + f[7]
+			info["band_5g"] = nrBandLabel(f[7], f[6])
 		}
 		info["level"] = barsFromRSRP(f[3])
 	} else if f := qengFields(raw, `"servingcell",`); len(f) >= 14 && f[1] == "NR5G-SA" {
@@ -862,7 +929,7 @@ func parseATCellular(raw string) map[string]any {
 		info["rsrq_5g"] = f[12]
 		info["snr_5g"] = f[13]
 		if info["band_5g"] == "" {
-			info["band_5g"] = "n" + f[9]
+			info["band_5g"] = nrBandLabel(f[9], f[8])
 		}
 		info["level"] = barsFromRSRP(f[11])
 	}
