@@ -102,7 +102,7 @@ func sshOpts() []string {
 		ctrlPath := sshControlDir() + "/cpebox_%h"
 		opts = append(opts,
 			"-o", "ControlMaster=auto",
-			"-o", "ControlPath=" + ctrlPath,
+			"-o", "ControlPath="+ctrlPath,
 			"-o", "ControlPersist=60",
 		)
 	}
