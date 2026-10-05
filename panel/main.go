@@ -374,6 +374,15 @@ func handleCellularInfo(w http.ResponseWriter, r *http.Request) {
 	ok(w, data)
 }
 
+func handleConnectivity(w http.ResponseWriter, r *http.Request) {
+	data, err := cached("connectivity", 20*time.Second, func() (any, error) { return checkInternet() })
+	if err != nil {
+		errResp(w, err)
+		return
+	}
+	ok(w, data)
+}
+
 func handleLeds(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		var body struct {
@@ -577,6 +586,7 @@ func main() {
 	mux.HandleFunc("/api/notify-config", requireMethod(http.MethodPost, handleNotifyConfig))
 	mux.HandleFunc("/api/data-usage", handleDataUsage)
 	mux.HandleFunc("/api/cellular-info", handleCellularInfo)
+	mux.HandleFunc("/api/connectivity", handleConnectivity)
 	mux.HandleFunc("/api/leds", handleLeds)
 	mux.HandleFunc("/api/stock", handleStock)
 	mux.HandleFunc("/api/raw", requireMethod(http.MethodPost, handleRaw))

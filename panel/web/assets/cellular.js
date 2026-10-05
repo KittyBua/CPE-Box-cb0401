@@ -1,7 +1,7 @@
 'use strict';
 // Cellular: connection details, 5G mode and the band editor.
 
-Views.cellular = { sources: ['cellular', 'status', 'netcfg', 'pin', 'autopin', 'apn'] };
+Views.cellular = { sources: ['cellular', 'connectivity', 'status', 'netcfg', 'pin', 'autopin', 'apn'] };
 
 // The main commercial LTE / 5G NR deployments per region (GSMA / 3GPP
 // allocations cross-checked against real operators). Presets are always

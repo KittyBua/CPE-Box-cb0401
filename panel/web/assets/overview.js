@@ -3,7 +3,32 @@
 // views: health gauges, the front-lights switch and the "open on your
 // phone" block.
 
-Views.overview = { sources: ['cellular', 'status', 'usage', 'devices', 'health', 'leds', 'info'] };
+Views.overview = { sources: ['cellular', 'connectivity', 'status', 'usage', 'devices', 'health', 'leds', 'info'] };
+
+// Real upstream reachability (ping/DNS from the router) - shown on the overview
+// Signal card and the Cellular Connection card, since "Registered" with an IP
+// can still mean no working internet.
+function renderConnectivity(c) {
+  const els = [document.getElementById('ovNet'), document.getElementById('celNetPill')].filter(Boolean);
+  if (!els.length) return;
+  let cls = 'pill', txt = '—', title = 'Real internet reachability, checked from the router (ping 8.8.8.8)';
+  if (c) {
+    if (c.online && c.dns) {
+      cls += ' good';
+      txt = c.latency_ms != null ? `Online · ${Math.round(c.latency_ms)} ms` : 'Online';
+    } else if (c.online) {
+      cls += ' warn';
+      txt = 'DNS issue';
+      title = 'Ping to 8.8.8.8 works but DNS resolution fails';
+    } else {
+      cls += ' bad';
+      txt = 'No internet';
+      title = 'No reply from 8.8.8.8 - registered but no working data path';
+    }
+  }
+  for (const el of els) { el.className = cls; el.textContent = txt; el.title = title; }
+}
+on('connectivity', renderConnectivity);
 
 // Which carrier to headline: the 5G one when there is one, else LTE.
 function headlineSignal(c) {

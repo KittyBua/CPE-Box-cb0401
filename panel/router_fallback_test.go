@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Real AT reply block captured from the RG520N-EB modem (LTE + NR5G NSA on
 // Telekom.de). The AT fallback must reconstruct the same essentials the stock
@@ -176,7 +179,12 @@ func TestNrBandFromArfcn(t *testing.T) {
 // cell while the ARFCN (427730) is correct. band_5g must come out n1, not the
 // bogus "n0" the raw band field would give.
 func TestParseATCellularNSA_band0FromArfcn(t *testing.T) {
-	raw := "AT+QNWINFO\r\n+QNWINFO: \"FDD LTE\",\"26201\",\"LTE BAND 3\",1300\r\n\r\nOK\r\n" +
+	// Real shape of a v1 NSA report: QNWINFO carries a "TDD NR5G" line whose
+	// band reads 0, which used to win over the QENG ARFCN derivation and leave
+	// band_5g as a bogus "n0". The LTE QNWINFO + QENG lines mirror a live cell.
+	raw := "AT+QNWINFO\r\n" +
+		"+QNWINFO: \"FDD LTE\",\"26201\",\"LTE BAND 3\",1300\r\n" +
+		"+QNWINFO: \"TDD NR5G\",\"26201\",\"NR5G BAND 0\",427730\r\n\r\nOK\r\n" +
 		"AT+QENG=\"servingcell\"\r\n" +
 		"+QENG: \"servingcell\",\"CONN\"\r\n" +
 		"+QENG: \"LTE\",\"FDD\",262,01,1929500,321,1300,3,5,5,34BA,-75,-7,-48,25,15,100,-\r\n" +
@@ -187,6 +195,33 @@ func TestParseATCellularNSA_band0FromArfcn(t *testing.T) {
 	}
 	if got, _ := info["nr_arfcn"].(string); got != "427730" {
 		t.Errorf("nr_arfcn = %q, want 427730", got)
+	}
+	if got, _ := info["network_type"].(string); got != "5G NSA" {
+		t.Errorf("network_type = %q, want 5G NSA", got)
+	}
+	// With no live QCAINFO (aggregatedBands empty here), the Carriers row is
+	// composed from the legs and must carry the derived 5G band.
+	if got, _ := info["band"].(string); !strings.Contains(got, "n1") {
+		t.Errorf("band = %q, want it to contain n1", got)
+	}
+}
+
+func TestNormalizeNrSinr(t *testing.T) {
+	cases := map[string]string{
+		"195":  "19.5", // cb0401 v1 reports NR SINR in 0.1 dB
+		"230":  "23",
+		"-420": "-42",
+		"18":   "18", // already dB - unchanged
+		"30":   "30",
+		"0":    "0",
+		"40":   "40",
+		"-":    "-", // placeholder, left as-is
+		"":     "",
+	}
+	for in, want := range cases {
+		if got := normalizeNrSinr(in); got != want {
+			t.Errorf("normalizeNrSinr(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

@@ -14,6 +14,19 @@ Because the notes live in this file, Markdown headings work as-is — no
 `--cleanup=verbatim` needed on the tag. Everything up to the next `## vX.Y.Z`
 heading belongs to a version; use `##` for the subsections within it.
 
+## v1.0.8 — 5G band fix that actually lands, internet check, band unlock on v1
+
+## Fixes
+
+- **5G cell still showed "n0" on cb0401 v1 (the real fix).** v1.0.7's derivation ran too late: `band_5g` was already set from the QNWINFO leg, which reports `NR5G BAND 0`, so the ARFCN fallback never fired. A band number of 0 is now treated as unknown everywhere, so the band is derived from the NR-ARFCN (427730 → **n1**) in both the 5G cell row and the Carriers list.
+- **Carriers row dropped the 5G band on v1.** In NSA that firmware lists only the LTE carriers in `AT+QCAINFO`, so the Carriers row read `B3 + B7 + B20` with no n-band. The 5G leg is now appended (`B3 + B7 + B20 + n1`).
+- **5G SINR showed an impossible value (e.g. 195 dB).** That firmware reports the NR SS-SINR in 0.1 dB steps; it's now scaled to real dB (~19.5), while whole-dB firmware is left as-is.
+
+## What's new
+
+- **Internet reachability indicator.** A pill on the Overview and Cellular cards shows whether the router actually has working internet — it pings `8.8.8.8` and resolves a hostname from the router itself, so you can tell a real outage from a healthy "Registered" state that still has no data path. Shows latency when online, "DNS issue" when only name resolution is down, "No internet" when the data path is dead.
+- **5G band unlock that survives reboots on cb0401 v1.** Bands you pick in Cellular → Bands are written straight to the modem over AT (v1's stock daemon won't take them) and now re-applied on every boot, so extra bands (e.g. n75/n76/n77 and the SA bands, where the module supports them) stick instead of resetting to the firmware default. On firmware whose daemon keeps bands itself, nothing changes.
+
 ## v1.0.7 — correct 5G band on cb0401 v1
 
 ## Fixes

@@ -558,7 +558,7 @@ func fillMissingSINR(info map[string]any) {
 		info["snr"] = lte
 	}
 	if needNR && nr != "" {
-		info["snr_5g"] = nr
+		info["snr_5g"] = normalizeNrSinr(nr)
 	}
 }
 
@@ -579,6 +579,47 @@ func parseQENGSINR(raw string) (lte, nr string) {
 		nr = f[13]
 	}
 	return lte, nr
+}
+
+var (
+	pingRecvRe = regexp.MustCompile(`(\d+) packets received`)
+	pingLossRe = regexp.MustCompile(`(\d+)% packet loss`)
+	pingAvgRe  = regexp.MustCompile(`=\s*[\d.]+/([\d.]+)/`)
+)
+
+// checkInternet probes real upstream connectivity from the router itself, not
+// from the panel host: the modem can be registered with an IP yet carry no
+// working data (dead APN, upstream outage), which the stock "Registered" state
+// never shows. It pings 8.8.8.8 (raw IP path) and resolves a hostname (DNS), so
+// the panel can say whether the internet is actually reachable right now.
+func checkInternet() (map[string]any, error) {
+	raw, err := run(`ping -c 2 -W 2 8.8.8.8 2>&1; echo "---DNS---"; nslookup one.one.one.one 2>&1`, 15*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	pingOut, dnsOut := raw, ""
+	if i := strings.Index(raw, "---DNS---"); i >= 0 {
+		pingOut, dnsOut = raw[:i], raw[i:]
+	}
+	res := map[string]any{"online": false, "dns": false}
+	if m := pingRecvRe.FindStringSubmatch(pingOut); m != nil {
+		if n, _ := strconv.Atoi(m[1]); n > 0 {
+			res["online"] = true
+		}
+	}
+	if m := pingLossRe.FindStringSubmatch(pingOut); m != nil {
+		res["loss"], _ = strconv.Atoi(m[1])
+	}
+	if m := pingAvgRe.FindStringSubmatch(pingOut); m != nil {
+		if v, e := strconv.ParseFloat(m[1], 64); e == nil {
+			res["latency_ms"] = v
+		}
+	}
+	// one.one.one.one resolves to 1.1.1.1 — its presence means DNS works.
+	if strings.Contains(dnsOut, "1.1.1.1") {
+		res["dns"] = true
+	}
+	return res, nil
 }
 
 // loose is a JSON scalar a firmware may report as a quoted string ("-77.0"),
@@ -693,7 +734,7 @@ func parseDumpStatus(raw string) (map[string]any, error) {
 		"rssi":         s.RSSI.String(),
 		"rsrp_5g":      s.RSRP5G.String(),
 		"rsrq_5g":      s.RSRQ5G.String(),
-		"snr_5g":       s.SNR5G.String(),
+		"snr_5g":       normalizeNrSinr(s.SNR5G.String()),
 		"pci":          s.PCI.String(),
 		"pci_5g":       s.PCI5G.String(),
 		"roaming":      s.Roam != 0,
@@ -723,9 +764,12 @@ var (
 )
 
 // bandLabel turns a QNWINFO band name ("LTE BAND 3") into a short label
-// ("B3" for LTE, "n1" for NR5G).
+// ("B3" for LTE, "n1" for NR5G). A band number of 0 is returned as "" (no band
+// 0 exists): cb0401 v1 firmware reports "NR5G BAND 0" on a live cell, and
+// leaving it blank lets the caller derive the real band from the ARFCN instead
+// of surfacing a bogus "n0".
 func bandLabel(s, prefix string) string {
-	if m := bandNumRe.FindStringSubmatch(s); m != nil {
+	if m := bandNumRe.FindStringSubmatch(s); m != nil && m[1] != "0" {
 		return prefix + m[1]
 	}
 	return ""
@@ -749,6 +793,22 @@ func qengFields(raw, tag string) []string {
 		parts[j] = strings.Trim(strings.TrimSpace(parts[j]), `"`)
 	}
 	return parts
+}
+
+// normalizeNrSinr fixes the NR SS-SINR unit on firmware that reports it in
+// 0.1 dB steps (cb0401 v1 shows e.g. 195 for 19.5 dB) while others report whole
+// dB. A real SINR never exceeds ~40 dB, so a magnitude above that is deci-dB and
+// gets scaled down; normal values (and LTE SINR, which isn't passed here) are
+// left untouched.
+func normalizeNrSinr(s string) string {
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return s
+	}
+	if v > 40 || v < -40 {
+		return strconv.FormatFloat(v/10, 'f', -1, 64)
+	}
+	return s
 }
 
 // barsFromRSRP approximates the daemon's 0–5 signal level from an LTE RSRP.
@@ -898,7 +958,7 @@ func parseATCellular(raw string) map[string]any {
 	if f := qengFields(raw, `"NR5G-NSA",`); len(f) >= 8 {
 		info["pci_5g"] = f[2]
 		info["rsrp_5g"] = f[3]
-		info["snr_5g"] = f[4]
+		info["snr_5g"] = normalizeNrSinr(f[4])
 		info["rsrq_5g"] = f[5]
 		info["nr_arfcn"] = f[6]
 		if info["band_5g"] == "" {
@@ -915,7 +975,7 @@ func parseATCellular(raw string) map[string]any {
 	if f := qengFields(raw, `"NR5G-SA",`); len(f) >= 8 {
 		info["pci_5g"] = f[2]
 		info["rsrp_5g"] = f[3]
-		info["snr_5g"] = f[4]
+		info["snr_5g"] = normalizeNrSinr(f[4])
 		info["rsrq_5g"] = f[5]
 		info["nr_arfcn"] = f[6]
 		if info["band_5g"] == "" {
@@ -927,7 +987,7 @@ func parseATCellular(raw string) map[string]any {
 		info["nr_arfcn"] = f[8]
 		info["rsrp_5g"] = f[11]
 		info["rsrq_5g"] = f[12]
-		info["snr_5g"] = f[13]
+		info["snr_5g"] = normalizeNrSinr(f[13])
 		if info["band_5g"] == "" {
 			info["band_5g"] = nrBandLabel(f[9], f[8])
 		}
@@ -939,6 +999,21 @@ func parseATCellular(raw string) map[string]any {
 	// QCAINFO ARFCN is ignored.
 	if agg, _, _ := aggregatedBands(); agg != "" {
 		info["band"] = agg
+		// In NSA, some cb0401 v1 firmware lists only the LTE carriers in
+		// QCAINFO, so the 5G leg (known from QENG above) is missing from the
+		// Carriers row - append it when it isn't already there.
+		if b5, _ := info["band_5g"].(string); b5 != "" {
+			found := false
+			for _, t := range strings.Split(agg, "+") {
+				if t == b5 {
+					found = true
+					break
+				}
+			}
+			if !found {
+				info["band"] = agg + "+" + b5
+			}
+		}
 	} else {
 		bp, _ := info["band_primary"].(string)
 		b5, _ := info["band_5g"].(string)
@@ -1088,12 +1163,8 @@ func setBands(nr5gBand, nsaNr5gBand, lteBand string) (map[string]string, error) 
 	if lte == "" || sa == "" || nsa == "" {
 		return nil, routerErrf("Each list needs at least one band (to turn 5G off, use the 5G mode selector instead)")
 	}
-	if err := applyBandsViaDaemon(lte, sa, nsa); err != nil {
-		// Older firmware (cb0401 v1) whose stock daemon rejects the ubus band
-		// call - program the modem directly over AT instead.
-		if atErr := applyBandsViaAT(lte, sa, nsa); atErr != nil {
-			return nil, routerErrf("%v; AT fallback also failed: %v", err, atErr)
-		}
+	if err := applyBands(lte, sa, nsa); err != nil {
+		return nil, err
 	}
 	return getModemConfig()
 }
@@ -1385,13 +1456,17 @@ func getRouterModel() (map[string]string, error) {
 	return map[string]string{"model": model, "firmware": v["ROM"]}, nil
 }
 
-// Persisting the 5G SA/NSA mode. Bands don't need any of this: the stock
-// mobile daemon keeps them in UCI and re-applies them itself (see
-// applyBandsViaDaemon). nr5g_disable_mode is the one setting the daemon
-// doesn't manage, so a small hotplug hook re-asserts it on every wan_2 ifup.
-// /etc/hotplug.d lives on ramfs, so the patch script (run from a firewall
-// include at every boot) re-creates the symlink to the persistent hook.
-// The hook/patch layout is adapted from davidohne/xiaomi_cb0401
+// Persisting the 5G SA/NSA mode, and on cb0401 v1 the band choice too. Where
+// the stock mobile daemon accepts band changes it keeps them in UCI and
+// re-applies them itself (applyBandsViaDaemon), so only nr5g_disable_mode needs
+// help. But v1's daemon rejects the band call: cpe-box writes bands straight to
+// the modem over AT, and that firmware resets NR bands to default on every
+// reboot - so the hook re-asserts both the mode and (when present in
+// band_prefs.conf) the band lists. A small hotplug hook runs on the modem WAN
+// ifup, and a boot-time re-assert covers firmware whose interface it can't
+// match. /etc/hotplug.d lives on ramfs, so the patch script (run from a
+// firewall include at every boot) re-creates the symlink to the persistent
+// hook. The hook/patch layout is adapted from davidohne/xiaomi_cb0401
 // (https://github.com/davidohne/xiaomi_cb0401/tree/main/Band_Unlock).
 const (
 	modePatchScript = `#!/bin/sh
@@ -1429,7 +1504,7 @@ echo "5g mode hook installed" > /tmp/5g_band_patch.log
 	// gate matches the modem WAN under the names seen across cb0401 firmware
 	// (v2 uses wan_2; v1 differs), and the boot patch above covers the rest.
 	modeHookScript = `#!/bin/sh
-# cpe-box: router hook v4 (5G mode + LEDs; bands are kept by the stock mobile daemon)
+# cpe-box: router hook v5 (5G mode + bands + LEDs)
 [ "$ACTION" = "ifup" ] || exit 0
 case "$INTERFACE" in wan_2|wan|wwan|wwan0|modem_wan|5g_wan) ;; *) exit 0 ;; esac
 LEDS=""
@@ -1439,25 +1514,35 @@ if [ "$LEDS" = "0" ]; then
 ` + ledsOffScript + `
 fi
 `
-	// Applies the saved 5G mode (nr5g_disable_mode) to the modem, waiting for
-	// the port and the stock daemon's port lock first. Shared by the ifup hook
-	// and the boot-time re-assert so the mode survives a reboot even where the
-	// hook can't fire. Goes through microcom like the stock at_cmd.sh.
+	// Applies the saved 5G mode (nr5g_disable_mode) and, on firmware that drops
+	// NR bands to default on every reboot (cb0401 v1), the saved band lists too,
+	// waiting for the port and the stock daemon's port lock first. Shared by the
+	// ifup hook and the boot-time re-assert so the choice survives a reboot even
+	// where the hook can't fire. Goes through microcom like the stock at_cmd.sh.
+	// Band lists are only present in band_prefs.conf when the stock daemon
+	// rejected the band change (v1) and cpe-box fell back to AT; on firmware
+	// where the daemon keeps bands, they're absent here and left to the daemon.
 	modeApplyScript = `#!/bin/sh
 [ -f /data/custom/hooks/band_prefs.conf ] && . /data/custom/hooks/band_prefs.conf
-[ -n "$NR5G_MODE" ] || exit 0
+[ -n "$NR5G_MODE$LTE_BAND$NR5G_BAND$NSA_NR5G_BAND" ] || exit 0
 i=0
 while [ $i -lt 60 ]; do [ -e /dev/ttyUSB2 ] && break; sleep 2; i=$((i+1)); done
 [ -e /dev/ttyUSB2 ] || exit 0
 L=/var/lock/LCK..ttyUSB2
-n=0
-while [ -e "$L" ] && [ $n -lt 20 ]; do usleep 250000; n=$((n+1)); done
-printf 'AT+QNWPREFCFG="nr5g_disable_mode",%s\r' "$NR5G_MODE" | busybox microcom /dev/ttyUSB2 >/dev/null 2>&1 &
-P=$!
-usleep 800000
-kill $P 2>/dev/null
+at() {
+  n=0
+  while [ -e "$L" ] && [ $n -lt 20 ]; do usleep 250000; n=$((n+1)); done
+  printf 'AT+QNWPREFCFG="%s",%s\r' "$1" "$2" | busybox microcom /dev/ttyUSB2 >/dev/null 2>&1 &
+  p=$!
+  usleep 700000
+  kill $p 2>/dev/null
+}
+[ -n "$LTE_BAND" ] && at lte_band "$LTE_BAND"
+[ -n "$NSA_NR5G_BAND" ] && at nsa_nr5g_band "$NSA_NR5G_BAND"
+[ -n "$NR5G_BAND" ] && at nr5g_band "$NR5G_BAND"
+[ -n "$NR5G_MODE" ] && at nr5g_disable_mode "$NR5G_MODE"
 `
-	modeHookMarker      = "router hook v4"
+	modeHookMarker      = "router hook v5"
 	modeFirewallSnippet = `
 config include 'auto_5g_band_patch'
 	option type 'script'
@@ -1552,7 +1637,10 @@ grep -q nsa_nr5g_band %[1]s && echo V1 || echo V2; cat %[3]s 2>/dev/null`, modeH
 }
 
 var prefKeyRe = regexp.MustCompile(`^[A-Z0-9_]+$`)
-var prefValRe = regexp.MustCompile(`^[a-z0-9]*$`)
+
+// Hook pref values are either a single mode digit or a colon-separated band
+// list (e.g. "1:3:7:28"); both are plain lowercase/digits plus ':'.
+var prefValRe = regexp.MustCompile(`^[a-z0-9:]*$`)
 
 // setHookPref records one setting for the router hook to re-apply,
 // installing (or upgrading) the hook first. The whole read-modify-write
@@ -1580,6 +1668,45 @@ func setHookPref(key, value string) error {
 }
 
 func saveModePref(mode int) error { return setHookPref("NR5G_MODE", strconv.Itoa(mode)) }
+
+// saveBandPrefs records the band lists (comma-separated in, stored colon-
+// separated for AT) so the boot hook re-asserts them on firmware that resets
+// NR bands to default on reboot. clearBandPrefs removes them again when the
+// stock daemon took the change and will keep it itself.
+func saveBandPrefs(lte, sa, nsa string) error {
+	if err := setHookPref("LTE_BAND", commaToColon(lte)); err != nil {
+		return err
+	}
+	if err := setHookPref("NR5G_BAND", commaToColon(sa)); err != nil {
+		return err
+	}
+	return setHookPref("NSA_NR5G_BAND", commaToColon(nsa))
+}
+
+func clearBandPrefs() error {
+	hookMu.Lock()
+	defer hookMu.Unlock()
+	_, err := run(fmt.Sprintf(
+		"[ -f %[1]s ] && sed -i -e '/^LTE_BAND=/d' -e '/^NR5G_BAND=/d' -e '/^NSA_NR5G_BAND=/d' %[1]s || true",
+		modePrefsPath), 10*time.Second)
+	return err
+}
+
+// applyBands programs the three band lists: through the stock daemon when it
+// accepts them, else straight over AT (cb0401 v1, whose daemon rejects the
+// ubus band call). On the AT path it records the lists for the boot hook to
+// re-assert (v1 forgets NR bands on reboot); on the daemon path it clears any
+// such record, since the daemon persists bands itself.
+func applyBands(lte, sa, nsa string) error {
+	if err := applyBandsViaDaemon(lte, sa, nsa); err != nil {
+		if atErr := applyBandsViaAT(lte, sa, nsa); atErr != nil {
+			return routerErrf("%v; AT fallback also failed: %v", err, atErr)
+		}
+		return saveBandPrefs(lte, sa, nsa)
+	}
+	_ = clearBandPrefs()
+	return nil
+}
 
 // Front LEDs, through the stock firmware's own switch (led_ctl, which the
 // stock web UI calls): it persists the choice in UCI and the stock LED
@@ -1668,7 +1795,7 @@ func provisionRouter() error {
 		return nil
 	}
 	fmt.Println("Enabling every band this modem supports (the modem may briefly reconnect)...")
-	if err := applyBandsViaDaemon(hw.lte, hw.nr, hw.nr); err != nil {
+	if err := applyBands(hw.lte, hw.nr, hw.nr); err != nil {
 		// Provisioning bands is polish for the first run - the modem is
 		// working already with whatever bands the stock daemon set at
 		// factory. Failing here (usually because the modem is still
@@ -1685,7 +1812,7 @@ func provisionRouter() error {
 	if _, err := run("touch "+bandsUnlockedMarker, 10*time.Second); err != nil {
 		return err
 	}
-	fmt.Printf("Bands unlocked: LTE %s / 5G SA+NSA %s (saved by the stock modem daemon, survives reboots).\n", hw.lte, hw.nr)
+	fmt.Printf("Bands unlocked: LTE %s / 5G SA+NSA %s (kept across reboots).\n", hw.lte, hw.nr)
 	return nil
 }
 

@@ -66,6 +66,7 @@ function cleanError(msg) {
 const Sources = {
   status:   { url: '/api/status',         every: 20000 },
   cellular: { url: '/api/cellular-info',  every: 15000 },
+  connectivity: { url: '/api/connectivity', every: 30000 },
   health:   { url: '/api/system-health',  every: 15000 },
   usage:    { url: '/api/data-usage',     every: 30000 },
   devices:  { url: '/api/device-monitor', every: 30000 },
