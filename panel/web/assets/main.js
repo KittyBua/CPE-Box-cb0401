@@ -1,7 +1,7 @@
 'use strict';
 // Boot: header, polling and routing. Loaded last.
 
-const ALWAYS = ['cellular', 'info', 'sms']; // the header and tab badges need these on every page
+const ALWAYS = ['cellular', 'info', 'sms', 'simstatus']; // the header and tab badges need these on every page
 
 // --------------------------------------------------------------- header ---
 
@@ -14,8 +14,12 @@ on('cellular', c => {
   setText('liveRat', c.network_type || '—');
 });
 
+// The page's own asset version; when the panel was updated and restarted
+// while this tab stayed open, reload so it doesn't keep running old code.
+const PAGE_ASSETS = new URL($('script[src*="/assets/core.js"]').src).searchParams.get('v');
 on('info', i => {
   if (!i) return;
+  if (i.assets && PAGE_ASSETS && i.assets !== PAGE_ASSETS) { location.reload(); return; }
   $('#model').textContent = ['Xiaomi 5G CPE Pro', i.model, i.firmware ? 'firmware ' + i.firmware : ''].filter(Boolean).join(' · ');
   $('#model').title = 'CPE Box v' + i.version;
   setText('appver', i.version ? 'v' + i.version : '');

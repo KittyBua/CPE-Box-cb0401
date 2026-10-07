@@ -271,17 +271,120 @@ on('cellular', c => {
   if (!c) return;
   $('#pinLock').checked = !!c.sim_locked;
   $('#pinLock').disabled = c.sim_status !== 'Ready';
-  const pinRequired = c.sim_status === 'PIN required';
-  const pukRequired = c.sim_status === 'PUK required';
-  const box = $('#pinUnlockBox');
-  box.hidden = !(pinRequired || pukRequired);
-  $('#pinPukField').hidden = !pukRequired;
-  $('#pinPukField').querySelector('input').required = !!pukRequired;
-  const pinInput = $('#pinUnlockForm').pin;
-  pinInput.placeholder = pukRequired ? 'new PIN (4-8 digits)' : '4-8 digits';
-  setText('pinUnlockMsg',
-    pukRequired ? `Too many wrong PINs - unblock the SIM with its PUK and set a new PIN.${c.sim_puk_left != null ? ` ${c.sim_puk_left} PUK tries left.` : ''}` :
-    `The SIM is locked - enter the PIN to bring cellular back up.${c.sim_pin_left != null && c.sim_pin_left < 3 ? ` Only ${c.sim_pin_left} tries left before the PUK is needed.` : ''}`);
+});
+
+// ------------------------------------------------------------ SIM lock ---
+// Whether the SIM wants its PIN/PUK comes from the stock GetSIMStatus - the
+// same check the stock PIN dialog uses. It answers while the SIM is locked,
+// when the cellular read (daemon status + AT) may not, so the prompt shows
+// up on every page as soon as the panel opens after a reboot.
+
+function simLockState() {
+  const s = Sources.simstatus.data, c = Sources.cellular.data;
+  if (s && s.status != null) {
+    return { pin: s.status === 2, puk: s.status === 3, pinLeft: s.pinretry, pukLeft: s.pukretry, autopin: String(s.autopin) === '1' };
+  }
+  if (c) return { pin: c.sim_status === 'PIN required', puk: c.sim_status === 'PUK required', pinLeft: c.sim_pin_left, pukLeft: c.sim_puk_left };
+  return null;
+}
+
+// Unlocks with the stock PIN dialog's own field names (pincode/autopin,
+// pukcode/newpin). When the SIM used up a try the code was wrong, and the
+// error says how many tries are left.
+async function unlockSim({ pin, puk, remember }) {
+  const after = ['simstatus', 'pin', 'autopin', 'cellular', 'status'];
+  const before = Sources.simstatus.data || {};
+  try {
+    if (puk) await stock('puk_verify', { pukcode: puk, newpin: pin }, after);
+    else await stock('pin_verify', { pincode: pin, autopin: remember ? 1 : 0 }, after);
+  } catch (err) {
+    await refresh('simstatus');
+    const s = Sources.simstatus.data;
+    // Only call it a wrong code when the SIM actually used up a try.
+    const used = s && (puk ? s.pukretry < before.pukretry : s.pinretry < before.pinretry || s.status === 3);
+    if (!used) throw err;
+    if (puk) throw new Error(s.pukretry > 0 ? `Wrong PUK - ${s.pukretry} tries left` : 'Wrong PUK - the SIM is now blocked for good');
+    throw new Error(s.pinretry > 0 ? `Wrong PIN - ${s.pinretry} ${s.pinretry === 1 ? 'try' : 'tries'} left` : 'Wrong PIN - the SIM now needs its PUK');
+  }
+}
+
+function lockText(st) {
+  return st.puk
+    ? `Too many wrong PINs - unblock the SIM with its PUK and set a new PIN.${st.pukLeft != null ? ` ${st.pukLeft} PUK tries left.` : ''}`
+    : `The SIM is locked - enter the PIN to bring cellular back up.${st.pinLeft != null && st.pinLeft < 3 ? ` Only ${st.pinLeft} ${st.pinLeft === 1 ? 'try' : 'tries'} left before the PUK is needed.` : ''}`;
+}
+
+const SimLock = { dismissed: null };
+
+function renderSimLock() {
+  const st = simLockState();
+  const locked = !!st && (st.pin || st.puk);
+  $('#simLockBanner').hidden = !locked;
+  $('#pinUnlockBox').hidden = !locked;
+  const dlg = $('#pinDialog');
+  if (!locked) {
+    SimLock.dismissed = null;
+    if (dlg.open) dlg.close();
+    return;
+  }
+  const key = st.puk ? 'puk' : 'pin';
+  setText('simLockText', st.puk ? 'SIM is blocked - unblock it with the PUK. '
+    : `SIM is locked. ${st.pinLeft != null ? st.pinLeft + ' PIN tries left. ' : ''}`);
+  // Cellular tab form
+  $('#pinPukField').hidden = !st.puk;
+  $('#pinPukField').querySelector('input').required = st.puk;
+  $('#pinUnlockForm').pin.placeholder = st.puk ? 'new PIN (4-8 digits)' : '4-8 digits';
+  setText('pinUnlockMsg', lockText(st));
+  // Prompt on every page, once per lock state unless dismissed
+  const f = $('#pinDialogForm');
+  setText('pinDialogTitle', st.puk ? 'SIM is blocked' : 'SIM is locked');
+  setText('pinDialogText', lockText(st));
+  $('#pinDialogPukField').hidden = !st.puk;
+  f.puk.required = st.puk;
+  setText('pinDialogPinLabel', st.puk ? 'New PIN' : 'PIN');
+  $('#pinDialogRememberRow').hidden = st.puk;
+  if (!dlg.open && SimLock.dismissed !== key) {
+    f.reset();
+    f.remember.checked = st.autopin !== false;
+    $('#pinDialogMsg').textContent = '';
+    dlg.showModal();
+    f.elements[st.puk ? 'puk' : 'pin'].focus();
+  }
+}
+on('simstatus', renderSimLock);
+on('cellular', renderSimLock);
+
+$('#simLockLink').addEventListener('click', e => {
+  e.preventDefault();
+  SimLock.dismissed = null;
+  renderSimLock();
+});
+$('#pinDialogLater').addEventListener('click', () => {
+  const st = simLockState();
+  SimLock.dismissed = st && st.puk ? 'puk' : 'pin';
+  $('#pinDialog').close();
+});
+$('#pinDialog').addEventListener('cancel', () => {
+  const st = simLockState();
+  SimLock.dismissed = st && st.puk ? 'puk' : 'pin';
+});
+
+$('#pinDialogForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const f = e.target;
+  const withPuk = !$('#pinDialogPukField').hidden;
+  const pin = f.pin.value.trim(), puk = f.puk.value.trim();
+  if (withPuk && !/^\d{8}$/.test(puk)) return void ($('#pinDialogMsg').textContent = 'A PUK is 8 digits');
+  if (!/^\d{4,8}$/.test(pin)) return void ($('#pinDialogMsg').textContent = 'A PIN is 4 to 8 digits');
+  $('#pinDialogMsg').textContent = '';
+  try {
+    await withBusy($('#pinDialogBtn'), () => unlockSim({ pin, puk: withPuk ? puk : '', remember: f.remember.checked }));
+    $('#pinDialog').close();
+    toast(withPuk ? 'SIM unblocked - new PIN set' : 'SIM unlocked');
+  } catch (err) {
+    f.pin.value = '';
+    $('#pinDialogMsg').textContent = err.message;
+  }
 });
 
 $('#pinUnlockForm').addEventListener('submit', async e => {
@@ -293,17 +396,14 @@ $('#pinUnlockForm').addEventListener('submit', async e => {
   const btn = $('#pinUnlockBtn');
   const withPuk = !$('#pinPukField').hidden;
   if (withPuk && !/^\d{8}$/.test(puk)) return toast('A PUK is 8 digits', 'err');
+  const remember = Sources.autopin.data ? String(Sources.autopin.data.autopin) === '1' : true;
   withBusy(btn, async () => {
-    if (withPuk) {
-      await stock('puk_verify', { sim_puk: puk, sim_pin: pin }, ['pin', 'cellular', 'status']);
-      toast('SIM unblocked - new PIN set');
-    } else {
-      await stock('pin_verify', { sim_pin: pin }, ['pin', 'cellular', 'status']);
-      toast('SIM unlocked');
-    }
+    await unlockSim({ pin, puk: withPuk ? puk : '', remember });
+    toast(withPuk ? 'SIM unblocked - new PIN set' : 'SIM unlocked');
     f.reset();
-  }).catch(err => { toast(err.message, 'err'); refresh('cellular'); refresh('pin'); });
+  }).catch(() => {});
 });
+
 on('autopin', d => {
   if (!d) return;
   $('#autoPin').checked = String(d.autopin) === '1';
@@ -391,7 +491,8 @@ function openApnForm(a) {
   f.hidden = false;
   for (const k of ['file', 'apn', 'user', 'passwd', 'id']) f[k].value = a ? a[k] || '' : '';
   f.pdp.value = a?.pdp || 'IPv4 & IPv6';
-  f.encryption.value = a?.encryption || 'NONE';
+  // stock values are None/PAP/CHAP; older entries may say NONE
+  f.encryption.value = /^none$/i.test(a?.encryption || '') || !a?.encryption ? 'None' : a.encryption;
   f.file.focus();
 }
 $('#apnAddBtn').addEventListener('click', () => openApnForm(null));
@@ -430,3 +531,32 @@ $('#apnList').addEventListener('click', e => {
     }).catch(() => {});
   }
 });
+
+// ------------------------------------------------------------------- SMSC ---
+
+async function readSMSC() {
+  try {
+    const d = await api('/api/smsc');
+    setText('smscCurrent', d.smsc || '—');
+  } catch (err) {
+    setMsg('smscMsg', err.message, 'err');
+  }
+}
+$('#smscApplyBtn').addEventListener('click', async e => {
+  const num = ($('#smscNew').value || '').replace(/[\s()-]/g, '');
+  if (!/^\+?\d{3,20}$/.test(num)) return setMsg('smscMsg', 'Enter a phone number, like +491710760000', 'err');
+  try {
+    await withBusy(e.currentTarget, async () => {
+      const d = await api('/api/smsc', { smsc: num });
+      setText('smscCurrent', d.smsc || num);
+      $('#smscNew').value = '';
+      setMsg('smscMsg', 'Saved', 'ok');
+    });
+  } catch (err) {
+    setMsg('smscMsg', err.message, 'err');
+  }
+});
+window.addEventListener('hashchange', () => {
+  if (location.hash === '#cellular' && $('#smscCurrent').textContent === '—') readSMSC();
+});
+if (location.hash === '#cellular') setTimeout(readSMSC, 800);

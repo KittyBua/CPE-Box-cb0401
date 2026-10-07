@@ -373,7 +373,7 @@ func getModemConfig() (map[string]string, error) {
 			cfg["hw_nr5g_band"] = commaToColon(sup.nr)
 		}
 	}
-	if raw, err := atQuery([]string{`AT+QNWPREFCFG="ue_capability_band"`, `AT+QNWPREFCFG="nr5g_disable_mode"`}, 1200*time.Millisecond); err == nil {
+	if raw, err := atQuery([]string{`AT+QNWPREFCFG="ue_capability_band"`, `AT+QNWPREFCFG="nr5g_disable_mode"`, `AT+QNWPREFCFG="mode_pref"`}, 1200*time.Millisecond); err == nil {
 		p := parseQnwprefcfg(raw)
 		for _, k := range []string{"lte_band", "nr5g_band", "nsa_nr5g_band"} {
 			if v, ok := p[k]; ok {
@@ -381,14 +381,18 @@ func getModemConfig() (map[string]string, error) {
 			}
 		}
 		if v, ok := p["nr5g_disable_mode"]; ok {
-			cfg["nr5g_disable_mode"] = v
+			cfg["nr5g_disable_mode"] = panelMode(p["mode_pref"], v)
 		}
 	}
 	return cfg, nil
 }
 
 var (
-	qcaBandRe = regexp.MustCompile(`\+QCAINFO:\s*"(?:PCC|SCC)",(\d+),[^"]*"(LTE|NR5G)\s+BAND\s+(\d+)"`)
+	// The tail after the band is captured too: an SCC line whose RSRP (two
+	// fields after scell_state) is 0 or "-" is a configured but inactive
+	// carrier, which the stock daemon leaves out of its band list as well:
+	//   +QCAINFO: "SCC",431070,3,"NR5G BAND 1",1,450,0,-,-
+	qcaBandRe = regexp.MustCompile(`\+QCAINFO:\s*"(PCC|SCC)",(\d+),[^"]*"(LTE|NR5G)\s+BAND\s+(\d+)"([^\r\n]*)`)
 	// The primary carrier's ARFCN/EARFCN is the first number on the PCC line:
 	//   +QCAINFO: "PCC",634080,12,"NR5G BAND 78",...
 	qcaPccRe = regexp.MustCompile(`\+QCAINFO:\s*"PCC",(\d+),[^"]*"(LTE|NR5G)\s+BAND`)
@@ -398,9 +402,21 @@ var (
 // "B3+B8+n1+n78", plus the primary carrier's ARFCN/EARFCN and its RAT
 // ("LTE"/"NR5G"). Best-effort — empty strings on any hiccup, so the caller can
 // fall back to the primary band/ARFCN from the daemon or QENG.
-func aggregatedBands() (bands, pccArfcn, pccRat string) {
-	raw, err := atQuery([]string{`AT+QCAINFO`}, 2*time.Second)
+// readQCAINFO returns the raw AT+QCAINFO reply, or "" on any error. A var so
+// tests can feed captured replies instead of reaching a live modem.
+var readQCAINFO = func() string {
+	// The reply is complete within ~300 ms; a short wait keeps the port free
+	// for the console and the rest of the poll.
+	raw, err := atQuery([]string{`AT+QCAINFO`}, 800*time.Millisecond)
 	if err != nil {
+		return ""
+	}
+	return raw
+}
+
+func aggregatedBands() (bands, pccArfcn, pccRat string) {
+	raw := readQCAINFO()
+	if raw == "" {
 		return "", "", ""
 	}
 	if m := qcaPccRe.FindStringSubmatch(raw); m != nil && m[1] != "0" {
@@ -409,7 +425,10 @@ func aggregatedBands() (bands, pccArfcn, pccRat string) {
 	var out []string
 	seen := map[string]bool{}
 	for _, m := range qcaBandRe.FindAllStringSubmatch(raw, -1) {
-		arfcn, rat, band := m[1], m[2], m[3]
+		arfcn, rat, band := m[2], m[3], m[4]
+		if m[1] == "SCC" && qcaInactive(m[5]) {
+			continue
+		}
 		prefix := "B"
 		if rat == "NR5G" {
 			prefix = "n"
@@ -436,6 +455,42 @@ func aggregatedBands() (bands, pccArfcn, pccRat string) {
 		}
 	}
 	return strings.Join(out, "+"), pccArfcn, pccRat
+}
+
+// qcaInactive reports whether the fields after the band on an SCC line
+// (",<scell_state>,<pci>,<rsrp>,...") show a carrier with no signal. A bare
+// ",<pci>" (the NSA NR leg) is active.
+func qcaInactive(tail string) bool {
+	f := strings.Split(strings.TrimPrefix(strings.TrimSpace(tail), ","), ",")
+	if len(f) < 3 {
+		return false
+	}
+	rsrp := strings.TrimSpace(f[2])
+	return rsrp == "0" || rsrp == "-"
+}
+
+// simNumber backfills the SIM's own number from AT+CNUM when the stock
+// daemon leaves it blank (v2 firmware does, though the SIM has it). It
+// doesn't change while the SIM is in, so the AT read is cached.
+func simNumber(daemon string) string {
+	if daemon != "" {
+		return daemon
+	}
+	v, err := cached("simnumber", 10*time.Minute, func() (any, error) {
+		raw, err := atQuery([]string{`AT+CNUM`}, 600*time.Millisecond)
+		if err != nil {
+			return nil, err
+		}
+		if m := cnumRe.FindStringSubmatch(raw); m != nil {
+			return m[1], nil
+		}
+		return "", nil
+	})
+	if err != nil {
+		return ""
+	}
+	n, _ := v.(string)
+	return n
 }
 
 // nrArfcnBands maps NR-ARFCN (SSB/DL) ranges to their 3GPP band number
@@ -568,7 +623,7 @@ func fillMissingSINR(info map[string]any) {
 // LTE parse). NR SINR is field 4 on the NR5G-NSA/standalone-SA line, or field 13
 // on the combined "servingcell",...,"NR5G-SA",... form.
 func parseQENGSINR(raw string) (lte, nr string) {
-	if f := qengFields(raw, `"LTE","`); len(f) >= 14 {
+	if f := lteQENGFields(raw); len(f) >= 14 {
 		lte = f[13]
 	}
 	if f := qengFields(raw, `"NR5G-NSA",`); len(f) >= 8 {
@@ -743,7 +798,7 @@ func parseDumpStatus(raw string) (map[string]any, error) {
 		"sim_locked":   parsed.SIM.Lock == 1,
 		"sim_pin_left": parsed.SIM.PinRemains,
 		"sim_puk_left": parsed.SIM.PukRemains,
-		"sim_number":   parsed.SIM.Number,
+		"sim_number":   simNumber(parsed.SIM.Number),
 		"sim_iccid":    parsed.SIM.ICCID,
 		"sim_country":  parsed.SIM.Country,
 	}, nil
@@ -778,6 +833,20 @@ func bandLabel(s, prefix string) string {
 // qengFields returns the comma-separated fields that follow tag on a +QENG
 // servingcell line (with surrounding quotes stripped), or nil if the line
 // isn't present.
+// lteQENGFields returns the LTE serving-cell fields from AT+QENG="servingcell"
+// indexed like the separate EN-DC line (+QENG: "LTE","FDD",<MCC>,...). In
+// LTE-only mode the modem folds them into the servingcell line instead
+// (+QENG: "servingcell","NOCONN","LTE","FDD",<MCC>,...), two fields later.
+func lteQENGFields(raw string) []string {
+	if f := qengFields(raw, `"LTE","`); f != nil {
+		return f
+	}
+	if f := qengFields(raw, `"servingcell",`); len(f) > 2 && f[1] == "LTE" {
+		return f[2:]
+	}
+	return nil
+}
+
 func qengFields(raw, tag string) []string {
 	head := "+QENG: " + tag
 	i := strings.Index(raw, head)
@@ -943,7 +1012,7 @@ func parseATCellular(raw string) map[string]any {
 	}
 
 	// Signal + PCI from QENG servingcell (LTE anchor and, in NSA, the NR leg).
-	if f := qengFields(raw, `"LTE","`); len(f) >= 14 {
+	if f := lteQENGFields(raw); len(f) >= 14 {
 		info["pci"] = f[4]
 		info["earfcn"] = f[5]
 		info["rsrp"] = f[10]
@@ -1029,31 +1098,86 @@ func parseATCellular(raw string) map[string]any {
 	return info
 }
 
-// setNr5gMode sets AT+QNWPREFCFG="nr5g_disable_mode":
+// setNr5gMode switches the panel's 5G mode:
 //
 //	0 = SA+NSA both enabled (modem picks NSA when available)
 //	1 = SA disabled (NSA/LTE only)
-//	2 = NSA disabled (force SA only)
+//	2 = NSA disabled (force SA only, LTE fallback)
 //	3 = all NR5G disabled (LTE only)
 //
-// The stock daemon doesn't manage this setting at all (it lives in the
-// modem's NV), so the only thing needed to keep it is the mode hook, which
-// re-asserts it on every wan_2 ifup in case anything resets it.
+// 0-2 are AT+QNWPREFCFG="nr5g_disable_mode" with mode_pref left at LTE:NR5G.
+// LTE only can't go through nr5g_disable_mode: the RG520N answers ERROR to
+// value 3, so it's mode_pref=LTE instead - the same thing the stock UI's
+// "4G only" writes. The stock network type (mobile.common.networktype) is
+// kept in step, so the stock UI shows the same mode and the stock daemon
+// doesn't put mode_pref back on its next restart; the mode hook re-asserts
+// both on every ifup in case anything resets them.
 func setNr5gMode(mode int) (map[string]string, error) {
 	if mode < 0 || mode > 3 {
-		return nil, fmt.Errorf("invalid nr5g_disable_mode %d (0-3)", mode)
+		return nil, fmt.Errorf("invalid 5G mode %d (0-3)", mode)
 	}
-	raw, err := atQuery([]string{fmt.Sprintf(`AT+QNWPREFCFG="nr5g_disable_mode",%d`, mode)}, 1500*time.Millisecond)
+	stockType := "auto"
+	if mode == 3 {
+		stockType = "4g"
+	}
+	// Best-effort: older stock firmware without this action still gets the
+	// mode over AT below and from the hook.
+	_ = setStockNetworkType(stockType)
+	raw, err := atQuery(modeATCommands(mode), 1500*time.Millisecond)
 	if err != nil {
 		return nil, err
 	}
-	if !strings.Contains(raw, "OK") {
+	if strings.Contains(raw, "ERROR") || !strings.Contains(raw, "OK") {
 		return nil, routerErrf("Modem rejected the 5G mode change: %s", strings.TrimSpace(raw))
 	}
 	if err := saveModePref(mode); err != nil {
 		return nil, err
 	}
+	invalidate("stock:netcfg")
 	return getModemConfig()
+}
+
+// modeATCommands are the AT writes for one panel 5G mode (see setNr5gMode).
+func modeATCommands(mode int) []string {
+	if mode == 3 {
+		return []string{`AT+QNWPREFCFG="mode_pref",LTE`}
+	}
+	return []string{
+		`AT+QNWPREFCFG="mode_pref",LTE:NR5G`,
+		fmt.Sprintf(`AT+QNWPREFCFG="nr5g_disable_mode",%d`, mode),
+	}
+}
+
+// setStockNetworkType sets the stock network type ("auto"/"4g") through the
+// stock UI's own action, keeping the mobile-data and roaming switches as
+// they are (the action takes all three).
+func setStockNetworkType(t string) error {
+	cur, err := stockCall(stockActions["netcfg"], map[string]string{}, 20*time.Second)
+	if err != nil {
+		return err
+	}
+	if s, _ := cur["networktype"].(string); s == t {
+		return nil
+	}
+	_, err = stockCall(stockActions["netcfg_set"], map[string]string{
+		"networktype": t,
+		"networkdata": anyToStr(cur["networkdata"]),
+		"networkroam": anyToStr(cur["networkroam"]),
+	}, 45*time.Second)
+	return err
+}
+
+// panelMode maps what the modem reports back to the panel's 5G mode:
+// mode_pref=LTE is LTE only whatever nr5g_disable_mode says (that's how the
+// stock UI's "4G only" looks), and mode_pref=NR5G is SA only.
+func panelMode(modePref, disable string) string {
+	switch strings.ToUpper(strings.TrimSpace(modePref)) {
+	case "LTE":
+		return "3"
+	case "NR5G":
+		return "2"
+	}
+	return disable
 }
 
 // normalizeBandList turns "1:3:7" / "1,3,7" (in any order, with dupes) into
@@ -1327,7 +1451,11 @@ func scanWifiChannels(band string) (*wifiScanResult, error) {
 }
 
 // signalWeight: how much a given neighboring network actually interferes -
-// strong and close networks matter more than weak and distant ones.
+// strong and close networks matter more than weak and distant ones. Networks
+// near the noise floor (below -82 dBm) barely count: they hardly interfere,
+// and an access point hears many more of them on its own operating channel
+// than on the ones it only visits while scanning, so weighting them like
+// real neighbors made whichever channel you were on look busiest.
 func signalWeight(hasSignal bool, signal float64) float64 {
 	if !hasSignal {
 		return 0.3
@@ -1338,7 +1466,10 @@ func signalWeight(hasSignal bool, signal float64) float64 {
 	if signal >= -75 {
 		return 0.5
 	}
-	return 0.2
+	if signal >= -82 {
+		return 0.2
+	}
+	return 0.05
 }
 
 // recommend24Channel scores each of the three genuinely non-overlapping
@@ -1504,7 +1635,7 @@ echo "5g mode hook installed" > /tmp/5g_band_patch.log
 	// gate matches the modem WAN under the names seen across cb0401 firmware
 	// (v2 uses wan_2; v1 differs), and the boot patch above covers the rest.
 	modeHookScript = `#!/bin/sh
-# cpe-box: router hook v5 (5G mode + bands + LEDs)
+# cpe-box: router hook v7 (5G mode + bands + LEDs)
 [ "$ACTION" = "ifup" ] || exit 0
 case "$INTERFACE" in wan_2|wan|wwan|wwan0|modem_wan|5g_wan) ;; *) exit 0 ;; esac
 LEDS=""
@@ -1514,7 +1645,7 @@ if [ "$LEDS" = "0" ]; then
 ` + ledsOffScript + `
 fi
 `
-	// Applies the saved 5G mode (nr5g_disable_mode) and, on firmware that drops
+	// Applies the saved 5G mode (mode_pref + nr5g_disable_mode) and, on firmware that drops
 	// NR bands to default on every reboot (cb0401 v1), the saved band lists too,
 	// waiting for the port and the stock daemon's port lock first. Shared by the
 	// ifup hook and the boot-time re-assert so the choice survives a reboot even
@@ -1529,20 +1660,38 @@ i=0
 while [ $i -lt 60 ]; do [ -e /dev/ttyUSB2 ] && break; sleep 2; i=$((i+1)); done
 [ -e /dev/ttyUSB2 ] || exit 0
 L=/var/lock/LCK..ttyUSB2
+# Waits out the port lock (clearing a stale one), and retries when microcom
+# still found the port taken or the modem didn't answer OK; a write that
+# never lands is logged instead of being skipped silently.
 at() {
-  n=0
-  while [ -e "$L" ] && [ $n -lt 20 ]; do usleep 250000; n=$((n+1)); done
-  printf 'AT+QNWPREFCFG="%s",%s\r' "$1" "$2" | busybox microcom /dev/ttyUSB2 >/dev/null 2>&1 &
-  p=$!
-  usleep 700000
-  kill $p 2>/dev/null
+  t=0
+  while [ $t -lt 3 ]; do
+    n=0
+    while [ -e "$L" ] && [ $n -lt 60 ]; do
+      o=$(tr -d ' \n' < "$L" 2>/dev/null)
+      [ -n "$o" ] && ! kill -0 "$o" 2>/dev/null && rm -f "$L" && break
+      usleep 250000; n=$((n+1))
+    done
+    printf 'AT+QNWPREFCFG="%s",%s\r' "$1" "$2" | busybox microcom /dev/ttyUSB2 >/tmp/cpebox_hook_at 2>&1 &
+    p=$!
+    usleep 1200000
+    kill $p 2>/dev/null; wait $p 2>/dev/null
+    grep -q OK /tmp/cpebox_hook_at && { rm -f /tmp/cpebox_hook_at; return 0; }
+    t=$((t+1)); sleep 2
+  done
+  logger -t cpe-box "hook: AT+QNWPREFCFG=$1,$2 failed: $(tr '\r\n' '  ' < /tmp/cpebox_hook_at)"
+  rm -f /tmp/cpebox_hook_at
 }
 [ -n "$LTE_BAND" ] && at lte_band "$LTE_BAND"
 [ -n "$NSA_NR5G_BAND" ] && at nsa_nr5g_band "$NSA_NR5G_BAND"
 [ -n "$NR5G_BAND" ] && at nr5g_band "$NR5G_BAND"
-[ -n "$NR5G_MODE" ] && at nr5g_disable_mode "$NR5G_MODE"
+# LTE only is mode_pref=LTE: the modem rejects nr5g_disable_mode=3.
+case "$NR5G_MODE" in
+  3) at mode_pref LTE ;;
+  0|1|2) at mode_pref LTE:NR5G; at nr5g_disable_mode "$NR5G_MODE" ;;
+esac
 `
-	modeHookMarker      = "router hook v5"
+	modeHookMarker      = "router hook v7"
 	modeFirewallSnippet = `
 config include 'auto_5g_band_patch'
 	option type 'script'
@@ -2362,22 +2511,31 @@ func setRootPassword(newPassword string) error {
 // byte totals - trafficd itself is HW-offload-blind so its absolute
 // numbers can't be trusted, but the ratio between them is a fair proxy
 // for how this line splits download vs upload over the router's lifetime.
-// Current rx/tx rate is trafficd's live counter directly.
+// The live rx/tx rate can't come from trafficd either: its rx_rate stays at a
+// few KB/s during a 30 MB/s download, in router and bridge mode alike. The
+// modem's own netdevs (wwan0, and rmnet_mhi0 under it) do count every byte,
+// so the rate is their /proc/net/dev delta over one second on the router.
 func getDataUsage() (map[string]any, error) {
 	raw, err := run(`ubus call trafficd wan
 echo "DAY=$(uci -q get mobile.flowstat.daily_usage)"
 echo "MONTH=$(uci -q get mobile.flowstat.monthly_usage)"
-echo "EDAY=$(uci -q get mobile.flowstat.effective_day)"`, 10*time.Second)
+echo "EDAY=$(uci -q get mobile.flowstat.effective_day)"
+N() { grep -E '^ *(`+modemNetdevs+`):' /proc/net/dev | sed "s/^/$1 /"; }
+N NETDEV1; sleep 1; N NETDEV2`, 15*time.Second)
 	if err != nil {
 		return nil, err
 	}
 	shell := &strings.Builder{}
 	jsonPart := &strings.Builder{}
+	var netdev []string
 	for _, line := range strings.Split(raw, "\n") {
-		if strings.HasPrefix(line, "DAY=") || strings.HasPrefix(line, "MONTH=") || strings.HasPrefix(line, "EDAY=") {
+		switch {
+		case strings.HasPrefix(line, "DAY=") || strings.HasPrefix(line, "MONTH=") || strings.HasPrefix(line, "EDAY="):
 			shell.WriteString(line)
 			shell.WriteByte('\n')
-		} else {
+		case strings.HasPrefix(line, "NETDEV"):
+			netdev = append(netdev, line)
+		default:
 			jsonPart.WriteString(line)
 			jsonPart.WriteByte('\n')
 		}
@@ -2409,7 +2567,11 @@ echo "EDAY=$(uci -q get mobile.flowstat.effective_day)"`, 10*time.Second)
 		out["month_rx"], out["month_tx"] = rx, total-rx
 		out["month_start_day"] = num("EDAY")
 	}
-	out["rx_rate"], out["tx_rate"] = wan.RxRate, wan.TxRate
+	if rx, tx, ok := netdevRate(netdev); ok {
+		out["rx_rate"], out["tx_rate"] = rx, tx
+	} else {
+		out["rx_rate"], out["tx_rate"] = wan.RxRate, wan.TxRate
+	}
 	if v["DAY"] == "" && v["MONTH"] == "" {
 		return nil, routerErrf("No data usage counters found on the router")
 	}
@@ -2420,6 +2582,97 @@ echo "EDAY=$(uci -q get mobile.flowstat.effective_day)"`, 10*time.Second)
 
 // rawShell runs an arbitrary shell command - for the "advanced" tab. Use
 // with care.
+var (
+	cscaRe  = regexp.MustCompile(`\+CSCA:\s*"([^"]*)"`)
+	smscRe  = regexp.MustCompile(`^\+?[0-9]{3,20}$`)
+	smscSep = strings.NewReplacer(" ", "", "-", "", "(", "", ")", "")
+)
+
+// getSMSC reads the SMS service centre number the modem sends texts through
+// (AT+CSCA, which the stock daemon's QMI path shares). Read over AT because
+// the daemon's own get_smsc garbles the last digit on some numbers.
+func getSMSC() (map[string]string, error) {
+	raw, err := atQuery([]string{`AT+CSCA?`}, 1500*time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+	m := cscaRe.FindStringSubmatch(raw)
+	if m == nil {
+		return nil, routerErrf("Modem didn't report an SMS centre: %s", strings.TrimSpace(raw))
+	}
+	return map[string]string{"smsc": m[1]}, nil
+}
+
+// setSMSC sets the SMS service centre number - for SIMs/providers whose
+// default one doesn't deliver - and saves it (AT+CSAS) so it survives a
+// reboot. International numbers (+...) go in as type 145, others as 129.
+func setSMSC(num string) (map[string]string, error) {
+	num = smscSep.Replace(strings.TrimSpace(num))
+	if !smscRe.MatchString(num) {
+		return nil, routerErrf("SMS centre must be a phone number, like +491710760000")
+	}
+	typ := 129
+	if strings.HasPrefix(num, "+") {
+		typ = 145
+	}
+	raw, err := atQuery([]string{fmt.Sprintf(`AT+CSCA="%s",%d`, num, typ), `AT+CSAS`}, 1500*time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+	if strings.Contains(raw, "ERROR") || !strings.Contains(raw, "OK") {
+		return nil, routerErrf("Modem rejected the SMS centre: %s", strings.TrimSpace(raw))
+	}
+	return getSMSC()
+}
+
+// modemNetdevs are the modem's network devices across cb0401 firmware: wwan0
+// is the WAN netdev on v2, rmnet_mhi0 the raw link under it (32-bit counters),
+// the rmnet_data/rmnet names what other Quectel setups use.
+const modemNetdevs = "wwan0|rmnet_mhi0|rmnet_data0|rmnet0"
+
+// netdevRate turns two /proc/net/dev samples taken one second apart
+// ("NETDEV1 wwan0: <rx bytes> ... <tx bytes> ...", then NETDEV2) into bytes/s.
+// The busiest device wins: depending on the firmware and on bridge mode the
+// traffic shows on wwan0 or only on the raw link. Counters that went
+// backwards wrapped at 32 bits.
+func netdevRate(lines []string) (rx, tx int64, ok bool) {
+	type ctr struct{ rx, tx int64 }
+	samples := map[string]map[string]ctr{"NETDEV1": {}, "NETDEV2": {}}
+	for _, l := range lines {
+		tag, rest, _ := strings.Cut(l, " ")
+		name, fields, found := strings.Cut(rest, ":")
+		f := strings.Fields(fields)
+		if !found || len(f) < 9 || samples[tag] == nil {
+			continue
+		}
+		r, err1 := strconv.ParseInt(f[0], 10, 64)
+		t, err2 := strconv.ParseInt(f[8], 10, 64)
+		if err1 == nil && err2 == nil {
+			samples[tag][strings.TrimSpace(name)] = ctr{r, t}
+		}
+	}
+	delta := func(a, b int64) int64 {
+		if b < a {
+			b += 1 << 32
+		}
+		if d := b - a; d >= 0 && d < 1<<32 {
+			return d
+		}
+		return 0
+	}
+	for dev, a := range samples["NETDEV1"] {
+		b, have := samples["NETDEV2"][dev]
+		if !have {
+			continue
+		}
+		dr, dt := delta(a.rx, b.rx), delta(a.tx, b.tx)
+		if !ok || dr+dt > rx+tx {
+			rx, tx, ok = dr, dt, true
+		}
+	}
+	return rx, tx, ok
+}
+
 func rawShell(cmd string) (string, error) {
 	return run(cmd, 30*time.Second)
 }
@@ -2444,17 +2697,37 @@ func sendAT(cmd string, wait time.Duration) (string, error) {
 	// Guard the shell side: pass the command via env, not interpolation.
 	// microcom -t is milliseconds; give the modem a bit longer than wait so
 	// we don't clip a slow reply, then kill in case it drops nothing at all.
+	// Like atQuery it holds atMutex and waits out the port lock (clearing a
+	// stale one): otherwise a cellular poll holding the port made microcom
+	// fail with "can't create" on stderr and the console got an empty reply.
 	ms := int(wait / time.Millisecond)
 	if ms < 500 {
 		ms = 500
 	}
-	script := fmt.Sprintf(`AT="$1"; rm -f /tmp/cpe_at_out
-( printf '%%s\r' "$AT" | busybox microcom -t %d /dev/ttyUSB2 > /tmp/cpe_at_out ) &
+	script := fmt.Sprintf(`AT="$1"; O=/tmp/cpe_at_out.$$; L=/var/lock/LCK..ttyUSB2
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  [ -e $L ] || break
+  OWNER=$(tr -d ' \n' < $L 2>/dev/null)
+  [ -n "$OWNER" ] && ! kill -0 "$OWNER" 2>/dev/null && rm -f $L && break
+  usleep 250000
+done
+( printf '%%s\r' "$AT" | busybox microcom -t %d %s > $O 2>&1 ) &
 p=$!; sleep %d; kill $p 2>/dev/null; wait 2>/dev/null
-cat /tmp/cpe_at_out
-rm -f /tmp/cpe_at_out`, ms+300, (ms/1000)+1)
+cat $O
+rm -f $O`, ms+300, atPort, (ms/1000)+1)
 	// run() shells through ssh; pass the command as a positional arg via sh -s.
 	quoted := strings.ReplaceAll(cmd, `'`, `'\''`)
 	full := fmt.Sprintf(`sh -c '%s' _ '%s'`, strings.ReplaceAll(script, `'`, `'\''`), quoted)
-	return run(full, wait+5*time.Second)
+	atMutex.Lock()
+	defer atMutex.Unlock()
+	var out string
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		out, err = run(full, wait+10*time.Second)
+		if err != nil || !strings.Contains(out, "can't create") {
+			return out, err
+		}
+		time.Sleep(time.Second)
+	}
+	return "", routerErrf("Modem AT port stayed busy, try again")
 }

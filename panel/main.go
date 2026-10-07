@@ -147,6 +147,7 @@ func handleInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	ok(w, map[string]any{
 		"version":  appVersion,
+		"assets":   assetVersion(),
 		"model":    model,
 		"firmware": firmware,
 		"router":   routerIP,
@@ -193,6 +194,28 @@ func handleSA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ok(w, cfg)
+}
+
+func handleSMSC(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var body struct {
+			Smsc string `json:"smsc"`
+		}
+		decodeBody(r, &body)
+		res, err := setSMSC(body.Smsc)
+		if err != nil {
+			errResp(w, err)
+			return
+		}
+		ok(w, res)
+		return
+	}
+	res, err := getSMSC()
+	if err != nil {
+		errResp(w, err)
+		return
+	}
+	ok(w, res)
 }
 
 func handleBands(w http.ResponseWriter, r *http.Request) {
@@ -357,7 +380,7 @@ func handleNotifyConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleDataUsage(w http.ResponseWriter, r *http.Request) {
-	data, err := cached("usage", 10*time.Second, func() (any, error) { return getDataUsage() })
+	data, err := cached("usage", 4*time.Second, func() (any, error) { return getDataUsage() })
 	if err != nil {
 		errResp(w, err)
 		return
@@ -572,6 +595,7 @@ func main() {
 	mux.HandleFunc("/api/info", handleInfo)
 	mux.HandleFunc("/api/status", handleStatus)
 	mux.HandleFunc("/api/sa", requireMethod(http.MethodPost, handleSA))
+	mux.HandleFunc("/api/smsc", handleSMSC)
 	mux.HandleFunc("/api/bands", requireMethod(http.MethodPost, handleBands))
 	mux.HandleFunc("/api/wifi", requireMethod(http.MethodPost, handleWifi))
 	mux.HandleFunc("/api/uci-dump", handleUciDump)

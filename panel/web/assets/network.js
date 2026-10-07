@@ -48,9 +48,14 @@ $('#dhcpForm').addEventListener('submit', e => {
   if (!(start >= 2 && end <= 254 && end >= start)) return setMsg('dhcpMsg', 'First must be 2 or more, last 254 or less, and first ≤ last', 'err');
   if (!f.on.checked && !confirm('Turn the DHCP server off? New devices will only connect if you set their addresses by hand.')) return;
   const dhcp = Sources.dhcp.data?.info || {};
+  // The stock form sends start/end (last octet) only on a /24; on any other
+  // mask it sends whole addresses as startip/endip.
+  const lan = Sources.lan.data?.info?.ipv4?.[0] || {};
+  const range = !lan.mask || lan.mask === '255.255.255.0' ? { start, end }
+    : { startip: lanPrefix() + '.' + start, endip: lanPrefix() + '.' + end };
   withBusy($('button', f), async () => {
     await stock('dhcp_set', {
-      start, end, limit: end - start + 1, leasetime: (Number(f.lease.value) || 12) * 60 + 'm',
+      ...range, leasetime: (Number(f.lease.value) || 12) * 60 + 'm',
       ignore: f.on.checked ? 0 : 1, router: dhcp.router || '', dns1: dhcp.dns1 || '', dns2: dhcp.dns2 || '',
     }, ['dhcp']);
     delete f.dataset.dirty;
@@ -78,8 +83,9 @@ $('#bindList').addEventListener('click', e => {
 
 // ------------------------------------------------------- port forwarding ---
 
-// the list reports "TCP"/"UDP"/..., adding and deleting take 1/2/3
-const protoNum = p => /tcp/i.test(p) && /udp/i.test(p) ? 3 : /udp/i.test(p) ? 2 : /tcp/i.test(p) ? 1 : Number(p) || 3;
+// the list reports "TCP"/"UDP"/"TCP + UDP"; adding takes TCP/UDP/ALL as on
+// the stock form (the stock code only maps those strings, not numbers)
+const protoNum = p => /tcp/i.test(p) && /udp/i.test(p) || /all/i.test(p) ? 3 : /udp/i.test(p) ? 2 : /tcp/i.test(p) ? 1 : Number(p) || 3;
 const PROTO = { 1: 'TCP', 2: 'UDP', 3: 'TCP + UDP' };
 on('portfwd', d => {
   if (!d) return;
@@ -104,7 +110,7 @@ $('#pfForm').addEventListener('submit', e => {
   const f = e.target;
   if (!ipRe.test(f.ip.value.trim())) return toast("The device address isn't valid", 'err');
   withBusy($('button[type=submit]', f), async () => {
-    await stock('portfwd_add', { name: f.name.value.trim(), protocol: f.protocol.value, export: f.export.value, inport: f.inport.value, ip: f.ip.value.trim() }, ['portfwd']);
+    await stock('portfwd_add', { name: f.name.value.trim(), service: 'manual', protocol: f.protocol.value, export: f.export.value, inport: f.inport.value, ip: f.ip.value.trim() }, ['portfwd']);
     f.hidden = true;
     toast('Port forwarding rule added');
   }).catch(() => {});
@@ -133,8 +139,9 @@ on('upnp', d => {
   $('#upnpOn').checked = String(d.status) === '1';
   $('#upnpOn').disabled = false;
   const list = arr(d.list);
-  $('#upnpList').innerHTML = list.map(u => `<div class="kv"><span class="k">${esc(u.name || u.proto || '')}</span>
-    <span class="v">${esc(u.eport || '')} → ${esc(u.iaddr || u.ip || '')}:${esc(u.iport || '')}</span></div>`).join('');
+  // stock list fields: protocol, name, ip, rport (outside), cport (device)
+  $('#upnpList').innerHTML = list.map(u => `<div class="kv"><span class="k">${esc(u.name || u.protocol || '')}</span>
+    <span class="v">${esc(u.protocol || '')} ${esc(u.rport || '')} → ${esc(u.ip || '')}:${esc(u.cport || '')}</span></div>`).join('');
 });
 $('#upnpOn').addEventListener('change', async e => {
   const want = e.target.checked;
@@ -167,7 +174,9 @@ $('#dmzOn').addEventListener('change', async e => {
   }
   e.target.disabled = true;
   try {
-    await stock('dmz_off', { mode: 0 }, ['dmz']);
+    // as on the stock page: closeDMZ only edits UCI, the reload applies it
+    await stock('dmz_off', {});
+    await stock('dmz_reload', {}, ['dmz']);
     $('#dmzIpRow').hidden = true;
     toast('DMZ off');
   } catch (err) {
@@ -181,9 +190,10 @@ $('#dmzSave').addEventListener('click', e => {
   e.preventDefault();
   const ip = $('#dmzIp').value.trim();
   if (!ipRe.test(ip)) return toast("That isn't a valid address", 'err');
-  const host = arr(Sources.hosts.data?.devicelist).find(h => h.ip === ip);
   withBusy(e.currentTarget, async () => {
-    await stock('dmz_set', { ip, mac: host?.mac || '', mode: 0 }, ['dmz']);
+    // only the address, like the stock page: with a MAC the stock code also
+    // creates a DHCP reservation for that device behind your back
+    await stock('dmz_set', { ip }, ['dmz']);
     toast(`DMZ → ${ip}`);
   }).catch(() => {});
 });

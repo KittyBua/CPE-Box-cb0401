@@ -136,19 +136,6 @@ on('health', h => {
   setText('ovUptime', h.uptime_sec != null ? 'up ' + fmtUptime(h.uptime_sec) : '');
 });
 
-// Persistent banner across every page: as soon as anything reaches the panel
-// after a reboot and the SIM is asking for its PIN/PUK, prompt for it - no
-// need to remember to open the Cellular tab.
-on('cellular', c => {
-  if (!c) return;
-  const pin = c.sim_status === 'PIN required';
-  const puk = c.sim_status === 'PUK required';
-  $('#simLockBanner').hidden = !(pin || puk);
-  setText('simLockText',
-    puk ? `SIM is blocked - unblock it with the PUK. ` :
-    pin ? `SIM is locked. ${c.sim_pin_left != null ? c.sim_pin_left + ' PIN tries left. ' : ''}` : '');
-});
-
 function healthGauges(h) {
   const used = h.mem_total_kb ? h.mem_total_kb - h.mem_free_real_kb : null;
   const memPct = used != null ? 100 * used / h.mem_total_kb : null;

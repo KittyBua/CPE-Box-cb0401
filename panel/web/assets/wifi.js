@@ -7,7 +7,7 @@ Views.wifi = { sources: ['wifiCfg', 'status'] };
 
 // stock wifiIndex: 1 = 2.4 GHz, 2 = 5 GHz (the order of getAllWifiInfo)
 const BANDS = { 1: { label: '2.4 GHz', key: '2.4', ico: 'cyan' }, 2: { label: '5 GHz', key: '5', ico: '' } };
-const SECURITY = [['psk2', 'WPA2'], ['mixed-psk', 'WPA / WPA2'], ['none', 'Open (no password)']];
+const SECURITY = [['ccmp', 'WPA3'], ['psk2+ccmp', 'WPA2 / WPA3'], ['psk2', 'WPA2'], ['mixed-psk', 'WPA / WPA2'], ['none', 'Open (no password)']];
 const POWER = [['max', 'Strong'], ['mid', 'Standard'], ['min', 'Eco']];
 const IDLE_MSG = 'Saving restarts this radio - its devices reconnect.';
 const wifiDirty = {};
@@ -59,7 +59,10 @@ function fillChannels(idx, info, channel) {
 function fillWidths(idx, info, want) {
   const form = wfb(idx, 'form');
   const c = arr(info.available_channels).find(x => String(x.c) === form.channel.value);
-  const widths = arr(c ? c.b : info.channelInfo?.bandList);
+  const widths = arr(c ? c.b : info.channelInfo?.bandList).map(String);
+  // Auto is bw=0, which the driver resolves per channel (5 GHz: HT160, or
+  // HT80 on 149-161 where 160 doesn't fit; 2.4 GHz: HT40) - not the same as
+  // forcing a width, so it's offered alongside every fixed one, 160 included.
   form.bandwidth.innerHTML = `<option value="0">Auto</option>` + widths.map(w => `<option value="${w}">${w} MHz</option>`).join('');
   want = String(want ?? form.bandwidth.value);
   form.bandwidth.value = want === '0' || widths.includes(want) ? want : (widths[widths.length - 1] || '0');
@@ -163,24 +166,21 @@ function updateDriftNote(idx) {
   const cfgBw = String(cfg.bandwidth || '');
   const liveCh = String(live.channel || '');
   const liveBw = String(live.width_mhz || '');
-  // Hide when nothing to compare, when the config matches what's on air,
-  // or when the user asked for Auto and the width matches (Auto means
-  // "driver picks the channel").
-  if (!liveCh) { note.hidden = true; return; }
-  if (cfgCh !== '0' && cfgCh === liveCh && cfgBw === liveBw) { note.hidden = true; return; }
-  if (cfgCh === '0' && cfgBw === liveBw) { note.hidden = true; return; }
-  // Explain the mismatch in the terms that actually apply on this band:
-  // on 5 GHz almost every non-obvious channel move is DFS (the driver hops
-  // off a channel a radar detector fired on, or narrows the width to stay
-  // out of DFS); on 2.4 GHz there is no DFS at all, so a mismatch is
-  // either a channel-6 fallback because 40 MHz couldn't cleanly fit, or
-  // (more usually) the radio hasn't finished reloading yet.
+  // Hide when nothing to compare or when what's on air matches the config;
+  // Auto (0) for the channel or the width matches whatever the driver chose.
+  const chOk = cfgCh === '0' || cfgCh === liveCh;
+  const bwOk = cfgBw === '0' || cfgBw === liveBw;
+  if (!liveCh || (chOk && bwOk)) { note.hidden = true; return; }
+  // Saving applies the change right away, so a mismatch is either the radio
+  // still restarting, or - on 5 GHz - the driver leaving a DFS channel after
+  // radar, or narrowing the width to fit the channel.
+  const what = [!chOk && `channel ${cfgCh}`, !bwOk && `${cfgBw} MHz`].filter(Boolean).join(' at ');
   const why = idx === 2
-    ? 'the driver narrowed the width or moved off a DFS channel to keep the radar-check happy'
-    : 'the radio may still be reloading, or 40 MHz couldn\'t fit around your channel and the driver fell back';
+    ? 'the radio may still be restarting, or the driver moved off a DFS channel or narrowed the width to fit it'
+    : 'the radio may still be restarting - give it a few seconds';
   note.hidden = false;
   note.querySelector('span').textContent =
-    `Actually running: ch ${liveCh} · ${liveBw} MHz — ${why}. Saving keeps your choice; the driver picks again after the next radio reload.`;
+    `Actually running: ch ${liveCh} · ${liveBw} MHz instead of ${what} — ${why}.`;
 }
 
 on('status', s => {
@@ -216,9 +216,18 @@ $('#scanBtn').addEventListener('click', e => withBusy(e.currentTarget, async () 
   if (rec) {
     const scores = Object.entries(rec.scores).map(([ch, sc]) => [Number(ch), sc]).sort((x, y) => x[0] - y[0]);
     const max = Math.max(1, ...scores.map(x => x[1]));
-    const current = Sources.status.data?.wifi?.['2.4']?.channel;
-    html += `<div class="note" style="margin:0 0 14px">${icon('check')}<span><b style="color:var(--text)">Channel ${rec.best_channel} is the clearest.</b> ` +
-      (current === rec.best_channel ? "You're already on it." : current ? `You're on ${current} - pick ${rec.best_channel} in the 2.4 GHz card above.` : '') + `</span></div>`;
+    const current = Number(Sources.status.data?.wifi?.['2.4']?.channel) || null;
+    const curScore = rec.scores[String(current)];
+    const bestScore = rec.scores[String(rec.best_channel)];
+    // Only suggest moving when it's clearly better: scans vary from one run
+    // to the next, and a near-tie isn't worth dropping every 2.4 GHz device.
+    const closeEnough = curScore != null && curScore - bestScore < Math.max(0.5, curScore * 0.25);
+    let msg;
+    if (current === rec.best_channel) msg = `<b style="color:var(--text)">Channel ${current} is the clearest.</b> You're already on it.`;
+    else if (closeEnough) msg = `<b style="color:var(--text)">Channel ${current} is fine.</b> ${rec.best_channel} scores only slightly lower (${bestScore} vs ${curScore}) - not worth switching.`;
+    else msg = `<b style="color:var(--text)">Channel ${rec.best_channel} is the clearest.</b> ` +
+      (current ? `You're on ${current} - pick ${rec.best_channel} in the 2.4 GHz card above.` : '');
+    html += `<div class="note" style="margin:0 0 14px">${icon('check')}<span>${msg}</span></div>`;
     html += scores.map(([ch, sc]) => `<div class="chan ${ch === rec.best_channel ? 'best' : ''}"><b>Channel ${ch}</b>
       <div class="barw"><i style="width:${Math.max(3, sc / max * 100)}%"></i></div><span class="n">${sc}</span></div>`).join('');
   }

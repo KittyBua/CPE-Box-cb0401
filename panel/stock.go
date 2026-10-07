@@ -32,20 +32,34 @@ type stockAction struct {
 	write       bool
 	timeout     time.Duration
 	invalidates []string // cache keys (reads are cached as "stock:<name>")
+	after       string   // shell run on the router once the action succeeded
 }
+
+// wifiApply puts saved Wi-Fi settings on the air. The stock setWifi only
+// writes UCI - the stock page saves through set_all_wifi, which applies them
+// too - so a channel/width/name change from the panel sat in the config until
+// the next reboot. /sbin/wifi update diffs the config against what's running
+// and restarts only the radio that changed (a no-op when nothing did). It runs
+// in the background, immune to the SSH session closing, since restarting the
+// radio can drop the very connection this call came over.
+const wifiApply = `( trap "" HUP; sleep 1; /sbin/wifi update ) >/tmp/cpebox_wifi_apply.log 2>&1 </dev/null &`
 
 // Only these actions are exposed. Reads are GET, writes POST; each maps to
 // luci.controller.api.<mod>.<fn> with the stock web page's field names.
 var stockActions = map[string]stockAction{
 	// reads
-	"wifi":       {mod: "xqnetwork", fn: "getAllWifiInfo"},
-	"lan":        {mod: "xqnetwork", fn: "getLanInfo"},
-	"dhcp":       {mod: "xqnetwork", fn: "getLanDhcp"},
-	"hosts":      {mod: "xqnetwork", fn: "getMacBindInfo"},
-	"apn":        {mod: "xqmobile", fn: "GetApnInfo"},
-	"netcfg":     {mod: "xqmobile", fn: "GetMobileNetCfg"},
-	"pin":        {mod: "xqmobile", fn: "GetRetryCount"},
-	"autopin":    {mod: "xqmobile", fn: "GetAutoPin"},
+	"wifi":    {mod: "xqnetwork", fn: "getAllWifiInfo"},
+	"lan":     {mod: "xqnetwork", fn: "getLanInfo"},
+	"dhcp":    {mod: "xqnetwork", fn: "getLanDhcp"},
+	"hosts":   {mod: "xqnetwork", fn: "getMacBindInfo"},
+	"apn":     {mod: "xqmobile", fn: "GetApnInfo"},
+	"netcfg":  {mod: "xqmobile", fn: "GetMobileNetCfg"},
+	"pin":     {mod: "xqmobile", fn: "GetRetryCount"},
+	"autopin": {mod: "xqmobile", fn: "GetAutoPin"},
+	// SIM state the way the stock PIN dialog checks it: status 1 ready,
+	// 2 PIN needed, 3 PUK needed, 4 damaged, else no SIM; plus pinretry,
+	// pukretry, pinlock, autopin. Cheap and works while the SIM is locked.
+	"simstatus":  {mod: "xqmobile", fn: "GetSIMStatus"},
 	"sms":        {mod: "xqmobile", fn: "refreshMsgbox"},
 	"sms_thread": {mod: "xqmobile", fn: "getDialogMsg", invalidates: []string{"stock:sms"}}, // marks the thread read
 	"dmz":        {mod: "xqsystem", fn: "getDMZInfo"},
@@ -55,9 +69,9 @@ var stockActions = map[string]stockAction{
 	"name":       {mod: "misystem", fn: "getRouterName"},
 
 	// writes
-	"wifi_set":   {mod: "xqnetwork", fn: "setWifi", write: true, timeout: 60 * time.Second, invalidates: []string{"stock:wifi", "status"}},
-	"wifi_on":    {mod: "xqnetwork", fn: "turnOnWifi", write: true, timeout: 60 * time.Second, invalidates: []string{"stock:wifi", "status"}},
-	"wifi_off":   {mod: "xqnetwork", fn: "shutDownWifi", write: true, timeout: 60 * time.Second, invalidates: []string{"stock:wifi", "status"}},
+	"wifi_set":   {mod: "xqnetwork", fn: "setWifi", write: true, timeout: 60 * time.Second, invalidates: []string{"stock:wifi", "status"}, after: wifiApply},
+	"wifi_on":    {mod: "xqnetwork", fn: "turnOnWifi", write: true, timeout: 60 * time.Second, invalidates: []string{"stock:wifi", "status"}, after: wifiApply},
+	"wifi_off":   {mod: "xqnetwork", fn: "shutDownWifi", write: true, timeout: 60 * time.Second, invalidates: []string{"stock:wifi", "status"}, after: wifiApply},
 	"lan_ip":     {mod: "xqnetwork", fn: "setLanIp", write: true, invalidates: []string{"stock:lan", "stock:dhcp"}},
 	"dhcp_set":   {mod: "xqnetwork", fn: "setLanDhcp", write: true, invalidates: []string{"stock:dhcp"}},
 	"bind":       {mod: "xqnetwork", fn: "macBind", write: true, invalidates: []string{"stock:hosts"}},
@@ -71,16 +85,18 @@ var stockActions = map[string]stockAction{
 	"pin_lock":   {mod: "xqmobile", fn: "SwitchPinLock", write: true, invalidates: []string{"stock:pin", "cellular"}},
 	"pin_change": {mod: "xqmobile", fn: "ModifySIMPin", write: true, invalidates: []string{"stock:pin"}},
 	// Verify/enter the SIM PIN (unlocks the SIM after a reboot when auto-pin is off,
-	// or when the stored auto-pin was wrong). Body: {"sim_pin":"1234"}.
-	"pin_verify": {mod: "xqmobile", fn: "CheckSIMPin", write: true, timeout: 30 * time.Second, invalidates: []string{"stock:pin", "cellular", "status"}},
+	// or when the stored auto-pin was wrong). Body: {"pincode":"1234","autopin":1}
+	// - the stock PIN dialog's own field names; autopin=1 also stores the PIN.
+	"pin_verify": {mod: "xqmobile", fn: "CheckSIMPin", write: true, timeout: 30 * time.Second, invalidates: []string{"stock:pin", "stock:simstatus", "stock:autopin", "cellular", "status"}},
 	// Unblock the SIM with the PUK after too many wrong PINs, and set a new PIN
-	// at the same time. Body: {"sim_puk":"12345678","sim_pin":"5678"}.
-	"puk_verify":  {mod: "xqmobile", fn: "CheckSIMPuk", write: true, timeout: 30 * time.Second, invalidates: []string{"stock:pin", "cellular", "status"}},
+	// at the same time. Body: {"pukcode":"12345678","newpin":"5678"}.
+	"puk_verify":  {mod: "xqmobile", fn: "CheckSIMPuk", write: true, timeout: 30 * time.Second, invalidates: []string{"stock:pin", "stock:simstatus", "cellular", "status"}},
 	"autopin_set": {mod: "xqmobile", fn: "SetAutoPin", write: true, invalidates: []string{"stock:autopin"}},
 	"sms_send":    {mod: "xqmobile", fn: "sendMsg", write: true, timeout: 45 * time.Second, invalidates: []string{"stock:sms", "stock:sms_thread"}},
 	"sms_delete":  {mod: "xqmobile", fn: "deleteMsgDialog", write: true, invalidates: []string{"stock:sms", "stock:sms_thread"}},
 	"dmz_set":     {mod: "xqsystem", fn: "setDMZ", write: true, invalidates: []string{"stock:dmz"}},
 	"dmz_off":     {mod: "xqsystem", fn: "closeDMZ", write: true, invalidates: []string{"stock:dmz"}},
+	"dmz_reload":  {mod: "xqsystem", fn: "reloadDMZ", write: true, timeout: 60 * time.Second, invalidates: []string{"stock:dmz"}},
 	"portfwd_add": {mod: "xqsystem", fn: "set_vs_rules", write: true, invalidates: []string{"stock:portfwd"}},
 	"portfwd_del": {mod: "xqsystem", fn: "del_vs_rules", write: true, invalidates: []string{"stock:portfwd"}},
 	"upnp_set":    {mod: "xqsystem", fn: "upnpSwitch", write: true, invalidates: []string{"stock:upnp"}},
@@ -124,6 +140,36 @@ func stockCall(a stockAction, fields map[string]string, timeout time.Duration) (
 	return res, nil
 }
 
+// legacyPinFields maps the PIN/PUK field names panels before v1.0.9 sent
+// (sim_pin, sim_puk) to the ones the stock code reads, so a browser tab still
+// running the old page can unlock the SIM too. A missing autopin keeps the
+// current "remember the PIN" setting instead of the stock code clearing it.
+func legacyPinFields(action string, f map[string]string) {
+	switch action {
+	case "pin_verify":
+		if f["pincode"] == "" && f["sim_pin"] != "" {
+			f["pincode"] = f["sim_pin"]
+		}
+		if _, ok := f["autopin"]; !ok {
+			f["autopin"] = "0"
+			if cur, err := stockCall(stockActions["autopin"], map[string]string{}, 15*time.Second); err == nil {
+				if v := anyToStr(cur["autopin"]); v != "" {
+					f["autopin"] = v
+				}
+			}
+		}
+	case "puk_verify":
+		if f["pukcode"] == "" && f["sim_puk"] != "" {
+			f["pukcode"] = f["sim_puk"]
+		}
+		if f["newpin"] == "" && f["sim_pin"] != "" {
+			f["newpin"] = f["sim_pin"]
+		}
+	}
+	delete(f, "sim_pin")
+	delete(f, "sim_puk")
+}
+
 func handleStock(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("a")
 	a, found := stockActions[name]
@@ -142,11 +188,15 @@ func handleStock(w http.ResponseWriter, r *http.Request) {
 		for k, v := range body {
 			fields[k] = anyToStr(v)
 		}
+		legacyPinFields(name, fields)
 		timeout := a.timeout
 		if timeout == 0 {
 			timeout = 30 * time.Second
 		}
 		res, err := stockCall(a, fields, timeout)
+		if err == nil && a.after != "" {
+			_, err = run(a.after, 15*time.Second)
+		}
 		invalidate(a.invalidates...)
 		if err != nil {
 			errResp(w, err)

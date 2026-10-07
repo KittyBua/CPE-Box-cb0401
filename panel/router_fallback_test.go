@@ -1,9 +1,20 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
+	"time"
 )
+
+// The parsers under test call readQCAINFO (AT+QCAINFO over SSH) for the
+// carrier list; keep them off any real router so results only depend on the
+// fixtures, and give the cached SIM-number lookup a value too.
+func TestMain(m *testing.M) {
+	readQCAINFO = func() string { return "" }
+	cacheData["simnumber"] = cacheEntry{time.Now(), ""}
+	os.Exit(m.Run())
+}
 
 // Real AT reply block captured from the RG520N-EB modem (LTE + NR5G NSA on
 // Telekom.de). The AT fallback must reconstruct the same essentials the stock
@@ -267,6 +278,75 @@ func TestLooseUnmarshal(t *testing.T) {
 		}
 		if l.String() != want {
 			t.Errorf("UnmarshalJSON(%s) = %q, want %q", in, l.String(), want)
+		}
+	}
+}
+
+// The stock UI's "4G only" writes mode_pref=LTE and leaves nr5g_disable_mode
+// at 0; the panel must read that back as LTE only, not SA+NSA.
+func TestPanelMode(t *testing.T) {
+	cases := []struct{ pref, disable, want string }{
+		{"LTE:NR5G", "0", "0"},
+		{"LTE:NR5G", "1", "1"},
+		{"LTE:NR5G", "2", "2"},
+		{"LTE", "0", "3"},
+		{"NR5G", "2", "2"},
+		{"", "1", "1"},
+	}
+	for _, c := range cases {
+		if got := panelMode(c.pref, c.disable); got != c.want {
+			t.Errorf("panelMode(%q, %q) = %q, want %q", c.pref, c.disable, got, c.want)
+		}
+	}
+	if cmds := modeATCommands(3); len(cmds) != 1 || !strings.Contains(cmds[0], `"mode_pref",LTE`) {
+		t.Errorf("LTE only must go through mode_pref, got %v", cmds)
+	}
+}
+
+// Live rate from two /proc/net/dev samples one second apart, captured during a
+// ~35 MB/s download on cb0401 v2 (rmnet_mhi0 had just wrapped its 32-bit rx).
+func TestNetdevRate(t *testing.T) {
+	lines := []string{
+		"NETDEV1  wwan0: 281593822828 226408488 0 0 0 0 0 0 24273869712 53909517 0 0 0 0 0 0",
+		"NETDEV1 rmnet_mhi0: 4294000000 37131993 0 0 0 0 0 0 3118322017 53831586 0 0 0 0 0 0",
+		"NETDEV2  wwan0: 281628622828 226438488 0 0 0 0 0 0 24274069712 53919517 0 0 0 0 0 0",
+		"NETDEV2 rmnet_mhi0: 33832704 37161993 0 0 0 0 0 0 3118522017 53841586 0 0 0 0 0 0",
+	}
+	rx, tx, ok := netdevRate(lines)
+	if !ok || rx != 34800000 || tx != 200000 {
+		t.Errorf("netdevRate = %d, %d, %v; want 34800000, 200000, true", rx, tx, ok)
+	}
+	if _, _, ok := netdevRate(nil); ok {
+		t.Error("netdevRate with no samples should report !ok")
+	}
+}
+
+// Real LTE-only reply (mode_pref=LTE) on cb0401 v2: the LTE fields sit in the
+// servingcell line itself instead of a separate +QENG: "LTE" line.
+func TestLTEOnlyQENG(t *testing.T) {
+	raw := "AT+QENG=\"servingcell\"\r\n+QENG: \"servingcell\",\"NOCONN\",\"LTE\",\"FDD\",262,01,1929500,321,1300,3,5,5,34BA,-72,-8,-46,25,15,-290,-\r\n\r\nOK\r\n"
+	lte, nr := parseQENGSINR(raw)
+	if lte != "25" || nr != "" {
+		t.Errorf("parseQENGSINR = %q, %q; want 25, \"\"", lte, nr)
+	}
+	f := lteQENGFields(raw)
+	if len(f) < 14 || f[4] != "321" || f[5] != "1300" || f[10] != "-72" {
+		t.Errorf("lteQENGFields = %v", f)
+	}
+}
+
+// Real AT+QCAINFO in NSA: the n1 SCC has scell_state 1 and RSRP 0 - configured
+// but inactive, and the stock daemon reports B3+B8+n78 at the same moment.
+func TestQcaInactive(t *testing.T) {
+	cases := map[string]bool{
+		",1,450,0,-,-":               true,
+		",284":                       false,
+		",2,225,-97,-10,-70,4,0,-,-": false,
+		",2,23,-75,-7,-52,30,0,-,-":  false,
+	}
+	for tail, want := range cases {
+		if got := qcaInactive(tail); got != want {
+			t.Errorf("qcaInactive(%q) = %v, want %v", tail, got, want)
 		}
 	}
 }

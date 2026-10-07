@@ -81,9 +81,24 @@
   <a href="#console"><svg class="i"><use href="#i-terminal"/></svg>Console</a>
 </nav>
 
+<dialog id="pinDialog" class="pin-dialog" aria-labelledby="pinDialogTitle">
+  <form id="pinDialogForm" method="dialog">
+    <div class="card-h"><div class="ico"><svg class="i"><use href="#i-lock"/></svg></div><h2 id="pinDialogTitle">SIM is locked</h2></div>
+    <p class="lead" id="pinDialogText">Enter the SIM PIN to bring cellular back up.</p>
+    <label class="field" id="pinDialogPukField" hidden>PUK<input type="password" name="puk" inputmode="numeric" autocomplete="off" pattern="[0-9]{8}" maxlength="8" placeholder="8 digits"></label>
+    <label class="field" style="margin-top:10px"><span id="pinDialogPinLabel">PIN</span><input type="password" name="pin" inputmode="numeric" autocomplete="off" pattern="[0-9]{4,8}" minlength="4" maxlength="8" required placeholder="4-8 digits"></label>
+    <label class="check" id="pinDialogRememberRow"><input type="checkbox" name="remember"> Remember the PIN - unlock automatically after a reboot</label>
+    <div class="msg err" id="pinDialogMsg"></div>
+    <div class="actions" style="margin-top:14px">
+      <button class="primary" type="submit" id="pinDialogBtn" value="unlock">Unlock SIM</button>
+      <button class="ghost" type="button" id="pinDialogLater">Later</button>
+    </div>
+  </form>
+</dialog>
+
 <main>
   <div class="banner" id="connBanner" hidden><svg class="i"><use href="#i-alert"/></svg><span id="connBannerText">Can't reach the router.</span></div>
-  <div class="banner" id="simLockBanner" hidden><svg class="i"><use href="#i-alert"/></svg><span id="simLockText">SIM is locked. </span><a href="#cellular">Enter PIN →</a></div>
+  <div class="banner" id="simLockBanner" hidden><svg class="i"><use href="#i-alert"/></svg><span id="simLockText">SIM is locked. </span><a href="#cellular" id="simLockLink">Enter PIN →</a></div>
 
   <!-- ============================================================ Overview -->
   <section class="view" id="v-overview" data-title="Overview" hidden>
@@ -214,7 +229,7 @@
             <label class="field">User<input type="text" name="user" maxlength="64" autocomplete="off"></label>
             <label class="field">Password<input type="password" name="passwd" maxlength="64" autocomplete="off"></label>
             <label class="field">IP type<select name="pdp"><option>IPv4 &amp; IPv6</option><option>IPv4</option><option>IPv6</option></select></label>
-            <label class="field">Authentication<select name="encryption"><option>NONE</option><option>PAP</option><option>CHAP</option><option>PAP &amp; CHAP</option></select></label>
+            <label class="field">Authentication<select name="encryption"><option value="None">None</option><option value="PAP">PAP</option><option value="CHAP">CHAP</option></select></label>
           </div>
           <input type="hidden" name="id">
           <div class="actions"><button class="primary" type="submit">Save</button><button type="button" id="apnCancel">Cancel</button></div>
@@ -249,6 +264,17 @@
         <div class="toggle-row" style="border-top:1px solid var(--border)"><div class="t"><b>Remember the PIN</b><small>Unlock the SIM automatically after a reboot</small></div>
           <label class="switch"><input type="checkbox" id="autoPin" disabled><span></span></label></div>
         <div class="actions" style="margin-top:6px"><button class="small" id="pinChangeBtn"><svg class="i"><use href="#i-lock"/></svg>Change PIN</button></div>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><div class="ico cyan"><svg class="i"><use href="#i-msg"/></svg></div><h2>SMS centre</h2><span class="sub">SMSC</span></div>
+        <p class="lead">The number the modem hands outgoing texts to. If SMS don't go through with your SIM, set your provider's SMSC here.</p>
+        <div class="kv"><span class="k">Current SMSC</span><span class="v" id="smscCurrent">—</span></div>
+        <label class="field" style="margin-top:12px">New SMSC<input type="text" id="smscNew" inputmode="tel" maxlength="24" placeholder="+491710760000" autocomplete="off"></label>
+        <div class="actions" style="margin-top:10px">
+          <button class="primary" id="smscApplyBtn">Save SMSC</button>
+          <span class="msg" id="smscMsg">Saved on the modem, kept after a reboot.</span>
+        </div>
       </div>
 
       <div class="card">
@@ -389,7 +415,7 @@
         <form id="pfForm" hidden style="margin-top:12px">
           <div class="two">
             <label class="field">Name<input type="text" name="name" required maxlength="32"></label>
-            <label class="field">Protocol<select name="protocol"><option value="3">TCP + UDP</option><option value="1">TCP</option><option value="2">UDP</option></select></label>
+            <label class="field">Protocol<select name="protocol"><option value="ALL">TCP + UDP</option><option value="TCP">TCP</option><option value="UDP">UDP</option></select></label>
             <label class="field">Outside port<input type="number" name="export" min="1" max="65535" required></label>
             <label class="field">Device address<input type="text" name="ip" required inputmode="decimal"></label>
             <label class="field">Device port<input type="number" name="inport" min="1" max="65535" required></label>

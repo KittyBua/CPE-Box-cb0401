@@ -66,6 +66,14 @@ async function loadThread() {
   const box = $('#smsThread');
   box.innerHTML = '<div class="empty">Loading…</div>';
   try {
+    // msg_id is the row the stock code marks read, so it must be this
+    // conversation's own: after starting a new one, take it from the inbox.
+    if (!Sms.lastId) {
+      await refresh('sms');
+      const row = arr(Sources.sms.data?.msgbox).find(m => m.contact_phone === Sms.peer);
+      if (!row) { box.innerHTML = '<div class="empty">No messages.</div>'; return; }
+      Sms.lastId = row.msg_id;
+    }
     const q = new URLSearchParams({ a: 'sms_thread', msg_id: Sms.lastId });
     if (Sms.peerRaw) q.set('phoneNum_b64', Sms.peerRaw); else q.set('phoneNum', Sms.peer);
     const d = await api('/api/stock?' + q);
@@ -93,6 +101,7 @@ $('#smsList').addEventListener('keydown', e => {
 $('#smsNewBtn').addEventListener('click', () => {
   Sms.peer = null;
   Sms.peerRaw = null;
+  Sms.lastId = null;
   Sms.composing = true;
   $('#v-messages').classList.add('in-thread');
   setText('smsPeer', 'New message');

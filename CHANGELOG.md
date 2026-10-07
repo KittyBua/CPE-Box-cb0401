@@ -14,6 +14,32 @@ Because the notes live in this file, Markdown headings work as-is — no
 `--cleanup=verbatim` needed on the tag. Everything up to the next `## vX.Y.Z`
 heading belongs to a version; use `##` for the subsections within it.
 
+## v1.0.9 — LTE only that works, SIM PIN dialog, real live speed, SMS centre, full stock/AT audit
+
+## Fixes
+
+- **"LTE only" failed and jumped back to SA + NSA.** The panel wrote `nr5g_disable_mode=3`, which the RG520N answers with `ERROR`. LTE only is now `mode_pref=LTE`, the same setting the stock UI's "4G only" uses. The stock network type is kept in step, so the stock UI and the panel always show the same mode, and a "4G only" set from the stock UI now reads as **LTE only** in the panel instead of SA + NSA. The boot hook (now v6) re-applies it after a reboot.
+- **SIM PIN couldn't be entered in the panel (error 1502), and the PIN prompt never showed up.** The panel sent the PIN as `sim_pin`, but the stock code reads `pincode` (and `pukcode`/`newpin` for the PUK), so it got an empty PIN. The lock was also only detected from the cellular read, which doesn't answer while the SIM is locked. Now the SIM state comes from the stock PIN check itself, and a **PIN/PUK dialog opens on any page** as soon as the SIM asks for it, with "Remember the PIN" and the tries left. A wrong PIN says how many tries remain.
+- **Console, IMEI read and IMEI write sometimes got an empty reply.** They didn't wait for the modem's AT port while the panel's own cellular poll held it. They now share the port lock and retry, and a busy port is reported instead of a silent blank.
+- **Carriers listed an inactive 5G carrier** (e.g. `B3 + B8 + n78 + n1` while n1 had no signal). Carriers with no RSRP are left out, matching the stock daemon.
+- **LTE only: signal, PCI and SINR were blank on the AT path.** In LTE-only mode the modem reports the LTE cell on the `servingcell` line itself, which is now parsed.
+- **Phone number was empty on cb0401 v2**; it's read from the SIM (`AT+CNUM`) when the stock daemon leaves it blank.
+- **Boot hook writes could be skipped silently** when the AT port was busy at ifup. They now wait, retry and log a failure (hook v7).
+- **Port forwarding: new rules used a protocol the router doesn't understand.** It now sends TCP / UDP / ALL like the stock page.
+- **UPnP list showed no ports**, reading field names the router doesn't return.
+- **DMZ off didn't take effect until the next firewall restart**, and **DMZ on quietly added a DHCP reservation** for the device. Both now do exactly what the stock page does.
+- **APN authentication showed blank for stock APNs** ("None" vs "NONE") and offered a "PAP & CHAP" value the router doesn't support.
+- **Wi-Fi changes saved from the panel didn't take effect until a reboot.** The stock `setWifi` the panel calls only writes the config (the stock page saves through `set_all_wifi`, which also applies it), so e.g. a new channel showed as saved while the radio kept running the old one. Saving now applies it right away with `wifi update`, restarting only the radio that changed. The "actually running" note also names what really differs, and no longer flags Auto width as a mismatch.
+- **2.4 GHz channel scan flip-flopped** - after moving to the "clearest" channel, a rescan said another one was clearer. Networks near the noise floor (below -82 dBm) were weighted like real neighbors, and the router hears far more of them on its own channel than on the ones it only visits while scanning. They now barely count, and the scan only suggests switching when another channel is clearly better, not on a near-tie.
+- **Wi-Fi: WPA3 networks showed as WPA2**, and saving downgraded them. WPA3 and WPA2/WPA3 are now offered.
+- **DHCP range on a 255.255.0.0 LAN** is sent as full addresses, as the stock page does.
+- **SMS: starting a new conversation marked a message in another thread as read.**
+- **Data usage showed "idle" while traffic was flowing.** The live rate came from trafficd, which the hardware offload hides traffic from: it read ~2 KB/s during a 30+ MB/s download, in router and bridge mode alike. The rate is now measured on the modem's own network devices (`wwan0` / `rmnet_mhi0`), and refreshes every 5 s instead of every 30 s.
+
+## What's new
+
+- **SMS centre (SMSC) setting.** Cellular → SMS centre shows the number the modem sends texts through and lets you set your provider's one, for SIMs whose default SMSC doesn't deliver. It's saved on the modem and kept after a reboot.
+
 ## v1.0.8 — 5G band fix that actually lands, internet check, band unlock on v1
 
 ## Fixes
