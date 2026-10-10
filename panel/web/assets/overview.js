@@ -3,7 +3,7 @@
 // views: health gauges, the front-lights switch and the "open on your
 // phone" block.
 
-Views.overview = { sources: ['cellular', 'connectivity', 'status', 'usage', 'devices', 'health', 'leds', 'info'] };
+Views.overview = { sources: ['cellular', 'connectivity', 'status', 'usage', 'devices', 'hosts', 'health', 'leds', 'info'] };
 
 // Real upstream reachability (ping/DNS from the router) - shown on the overview
 // Signal card and the Cellular Connection card, since "Registered" with an IP
@@ -55,7 +55,7 @@ on('cellular', c => {
 
   $('#ovLteRsrp').innerHTML = dbm(c.rsrp);
   $('#ovNrRsrp').innerHTML = dbm(c.rsrp_5g);
-  $('#ovLteMeters').innerHTML = meterRow('RSRP', c.rsrp, 'dBm', 'rsrp') + meterRow('RSRQ', c.rsrq, 'dB', 'rsrq') + meterRow('SINR', c.snr, 'dB', 'snr');
+  $('#ovLteMeters').innerHTML = meterRow('RSRP', c.rsrp, 'dBm', 'rsrp') + meterRow('RSRQ', c.rsrq, 'dB', 'rsrq') + meterRow('SINR', c.snr, 'dB', 'snr') + meterRow('RSSI', c.rssi, 'dBm', 'rssi');
   setText('ovLteCell', [c.band_primary, c.pci ? 'PCI ' + c.pci : ''].filter(Boolean).join(' · '));
   const has5g = !!num(c.rsrp_5g);
   $('#ovNrBlock').hidden = !has5g;
@@ -82,6 +82,8 @@ function renderSim() {
     ['APN', c.apn], ['PIN', pin], ['Modem', Sources.status.data?.modem?.modem_model],
   ];
   $('#ovSim').innerHTML = kvRows(rows);
+  // Some SIMs carry no number at all - point to where it can be written.
+  if (!c.sim_number && c.sim_status === 'Ready') $('#ovSim .kv .v').innerHTML = '<a href="#cellular">Add →</a>';
 }
 
 function kvRows(rows) {
@@ -108,7 +110,11 @@ on('usage', u => {
   setText('duRate', rate > 0 ? '↓ ' + fmtBytes(u.rx_rate || 0) + '/s · ↑ ' + fmtBytes(u.tx_rate || 0) + '/s' : 'idle');
 });
 
-on('devices', d => {
+// Device names also use the stock host list (hand-set names), so redraw
+// when either arrives.
+on('hosts', () => renderOvDevices(Sources.devices.data));
+on('devices', d => renderOvDevices(d));
+function renderOvDevices(d) {
   if (!d) return;
   const trusted = new Set(d.whitelist || []);
   // A DHCP lease outlives an association by hours - only devices trafficd or
@@ -123,12 +129,12 @@ on('devices', d => {
   const known = online.filter(x => trusted.has(x.mac));
   $('#ovDevRecent').innerHTML = unknown.concat(known).slice(0, 3).map(x => `<div class="dev">
       <div class="avatar ${trusted.has(x.mac) ? 'online' : 'alert'}">${icon(trusted.has(x.mac) ? 'check' : 'alert')}</div>
-      <div class="main"><div class="name">${esc(x.hostname || x.mdns_name || x.vendor || 'Unknown device')}</div>
+      <div class="main"><div class="name">${esc(deviceName(x))}</div>
       <div class="meta">${esc([x.ip, x.mac].filter(Boolean).join(' · '))}</div></div></div>`).join('');
   const badge = $('#untrustedCount');
   badge.hidden = !unknown.length;
   badge.textContent = unknown.length;
-});
+}
 
 on('health', h => {
   if (!h) return;

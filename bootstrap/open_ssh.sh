@@ -71,8 +71,11 @@ fi
 DEFAULT_PASSWORD="${MD5_HEX:0:8}"
 say "Derived default root password (from the serial number, not a secret we invented)."
 
-# Web UI uses the same factory default as Telnet. Override with WEB_PASSWORD
-# if you've changed the web admin password but not the Telnet/SSH one.
+# Web UI uses the same factory default as Telnet (derived from the serial).
+# One password only - the UI counts each wrong login against a 5-tries lockout
+# ("ban_login_time"), and burning two of them per start.sh run makes repeat
+# attempts hit the ban in no time. Override with WEB_PASSWORD if you've changed
+# the web admin password (first-run wizard, Mi Home, stock UI).
 WEB_PASSWORD="${WEB_PASSWORD:-$DEFAULT_PASSWORD}"
 
 # --- 3. Locate and read the SSH public key ----------------------------------
@@ -114,14 +117,31 @@ web_open_ssh() {
   _nonce="0_${_did}_${_ts}_${_rnd}"
   _account=$(printf '%s%s' "$WEB_PASSWORD" "$_key" | _sha1)
   _logdata=$(printf '%s%s' "$_nonce" "$_account"   | _sha1)
-
   _resp=$(curl -s -m 10 -X POST \
     "http://$ROUTER_IP/cgi-bin/luci/api/xqsystem/login" \
     --data-urlencode "username=admin" \
     --data-urlencode "logData=$_logdata" \
     --data-urlencode "nonce=$_nonce")
   _stok=$(printf '%s' "$_resp" | grep -o '"token":"[^"]*"' | head -1 | sed 's/.*"token":"//;s/".*//')
-  [ -n "$_stok" ] || die "Web login failed (wrong WEB_PASSWORD?). Response: $_resp"
+  if [ -z "$_stok" ]; then
+    # authsss = too many wrong attempts (yes, the typo is Xiaomi's own string).
+    # 401 / "not auth" without the lockout means the password simply doesn't
+    # match, i.e. the web admin password on the router is not the derived
+    # default any more (changed through the stock UI or through Mi Home).
+    _hint='The web admin password on this router is not the derived default.'
+    if echo "$_resp" | grep -q 'authsss\|remain_count'; then
+      _hint="$_hint The router also started rate-limiting login attempts; wait a few minutes before trying again."
+    fi
+    die "$_hint
+
+Pass your current web admin password (the one you type in the stock UI at http://$ROUTER_IP) once, like this:
+
+  WEB_PASSWORD='your-password' ./start.sh    # or ./setup.sh
+
+If you don't know it any more, log in to the stock UI once and change it there, then re-run with WEB_PASSWORD set to the new one.
+
+Raw response from the router: $_resp"
+  fi
   say "Logged in."
 
   _url="http://$ROUTER_IP/cgi-bin/luci/;stok=${_stok}/api/xqsmarthome/request_smartcontroller"

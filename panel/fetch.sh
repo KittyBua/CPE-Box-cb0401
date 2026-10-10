@@ -44,6 +44,19 @@ _download() {
   fi
 }
 
+# _matches_release TAG ASSET FILE: true unless the release's SHA256SUMS lists
+# a different hash for ASSET - so a release whose files were rebuilt under the
+# same tag still gets downloaded again. Can't check (offline, no sha tool) ->
+# treat as matching and keep the file that's here.
+_matches_release() {
+  local want have
+  want="$(curl -fsSL --max-time 15 "https://github.com/$CPEBOX_REPO/releases/download/$1/SHA256SUMS" 2>/dev/null |
+    awk -v a="$2" '$2 == a || $2 == "*"a { print $1 }')"
+  [ -z "$want" ] && return 0
+  have="$( { shasum -a 256 "$3" 2>/dev/null || sha256sum "$3" 2>/dev/null; } | awk '{ print $1 }')"
+  [ -z "$have" ] || [ "$have" = "$want" ]
+}
+
 _gui_asset() {
   case "$(uname -s)/$(uname -m)" in
     Darwin/arm64) echo cpe-box-macos-arm64 ;;
@@ -59,7 +72,12 @@ ensure_gui_bin() {
   local bin="$_FETCH_DIR/cpe-box" stamp="$_FETCH_DIR/.release"
   if _have_go; then
     echo "Building CPE Box from source..."
-    (cd "$_FETCH_DIR" && go build -o "$bin" .) && return 0
+    # Stamp the version the same way build.sh does for releases (from the git
+    # tag, e.g. 1.0.10, or 1.0.10-3-gabc1234 past it), so the panel doesn't
+    # show the placeholder version from the source.
+    local ver
+    ver="$(git -C "$_FETCH_DIR" describe --tags --always 2>/dev/null | sed 's/^v//')"
+    (cd "$_FETCH_DIR" && go build -ldflags="-X main.appVersion=${ver:-dev}" -o "$bin" .) && return 0
     echo "Build failed - trying a prebuilt release instead."
   fi
   local asset tag
@@ -74,7 +92,7 @@ ensure_gui_bin() {
     echo "ERROR: couldn't reach GitHub to download CPE Box (and Go isn't installed to build it)." >&2
     return 1
   fi
-  if [ -x "$bin" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$tag" ]; then
+  if [ -x "$bin" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$tag" ] && _matches_release "$tag" "$asset" "$bin"; then
     return 0
   fi
   echo "Downloading CPE Box $tag..."

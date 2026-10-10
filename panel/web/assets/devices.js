@@ -19,9 +19,16 @@ function hostInfo(mac) {
 }
 function fmtRate(b) { return b > 0 ? fmtBytes(b) + '/s' : ''; }
 
+// The stock list names a device that sent no DHCP hostname after its MAC;
+// that's a placeholder, not a name - it mustn't hide the mDNS name.
+const isMacName = (n, mac) => String(n).replace(/[^0-9a-f]/gi, '').toUpperCase() === String(mac).replace(/[^0-9a-f]/gi, '').toUpperCase();
+
 function deviceName(d) {
   const h = hostInfo(d.mac).host;
-  return (h && h.name && h.name !== h.origin_name ? h.name : '') || d.hostname || d.mdns_name || (h && h.name) || d.vendor || 'Unknown device';
+  const stock = h && h.name && !isMacName(h.name, d.mac) ? h.name : '';
+  // a name set by hand (in the stock UI or here) wins over what the device announces
+  const custom = stock && stock !== h.origin_name ? stock : '';
+  return custom || d.hostname || d.mdns_name || stock || d.vendor || 'Unknown device';
 }
 function deviceIcon(d) {
   const s = `${d.hostname || ''} ${d.mdns_name || ''}`.toLowerCase();

@@ -90,6 +90,18 @@ if ! command -v sshpass >/dev/null 2>&1; then
 fi
 
 mkdir -p "$(dirname "$KEY_PATH")"
+# A fresh clone on a second device (e.g. your phone) can import the key +
+# .env from a checkout where setup already succeeded. Avoids a password step
+# entirely, and avoids needing the router's web/SSH default to be known.
+#   CPEBOX_IMPORT_FROM=/path/to/working/panel ./start.sh
+if [ -n "${CPEBOX_IMPORT_FROM:-}" ] && [ ! -f "$KEY_PATH" ]; then
+  for F in router_key router_key.pub .env; do
+    [ -f "$CPEBOX_IMPORT_FROM/$F" ] && cp "$CPEBOX_IMPORT_FROM/$F" "$REPO_DIR/panel/$F"
+  done
+  [ -f "$KEY_PATH" ] && chmod 600 "$KEY_PATH"
+  [ -f "$ENV_FILE" ] && chmod 600 "$ENV_FILE"
+  [ -f "$KEY_PATH" ] && say "Imported SSH key and settings from $CPEBOX_IMPORT_FROM."
+fi
 if [ ! -f "$KEY_PATH" ]; then
   ssh-keygen -t ed25519 -f "$KEY_PATH" -N "" -C "cpe-box-gui" -q
 fi
@@ -123,10 +135,18 @@ else
     if [ -n "$KNOWN_PASSWORD" ] && command -v sshpass >/dev/null 2>&1 \
       && sshpass -p "$KNOWN_PASSWORD" ssh "${SSH_OPTS[@]}" "root@$ROUTER_IP" "$INSTALL_CMD" 2>/dev/null; then
       say "Installed the key using the password already on file."
+    # Try the stock CB0401 default ("root") automatically before asking, so
+    # a fresh setup on a factory unit of that family doesn't need any input.
+    elif [ -z "$KNOWN_PASSWORD" ] && command -v sshpass >/dev/null 2>&1 \
+      && sshpass -p "root" ssh "${SSH_OPTS[@]}" "root@$ROUTER_IP" "$INSTALL_CMD" 2>/dev/null; then
+      KNOWN_PASSWORD="root"
+      say "Installed the key using the stock CB0401 default password (root)."
     else
-      echo "You will be asked for the router's SSH password now — the derived default"
-      echo "described in the README's 'How SSH access is opened' section, or whatever"
-      echo "you've since changed it to (e.g. through the GUI's Change root password)."
+      echo "You will be asked for the router's SSH password now."
+      echo "  * stock CB0401 / Vodafone / Telekom 5G CPE Pro: the default is "root""
+      echo "  * plain Mi Routers: the derived password from the README's"
+      echo "    'How SSH access is opened' section"
+      echo "Or whatever you've since changed it to (e.g. through the GUI's Change root password)."
       echo
       if command -v sshpass >/dev/null 2>&1 && [ -t 0 ]; then
         # Read it here rather than letting ssh prompt, so a password that
@@ -143,7 +163,14 @@ else
           echo "That password was rejected."
         done
         unset TYPED_PASSWORD
-        [ -n "$KNOWN_PASSWORD" ] || die "Could not log in to the router over SSH with that password. Check that it's reachable at $ROUTER_IP and see the README for the derived default."
+        [ -n "$KNOWN_PASSWORD" ] || die "Could not log in to the router over SSH with that password after 3 tries.
+
+Factory default on this hardware depends on the OEM:
+  - stock CB0401 / CB0401 V2 (Xiaomi 5G CPE Pro, Vodafone, Telekom etc.): the password is \"root\"
+  - plain Mi Routers: the derived password printed above
+If you changed it (through the stock UI, Mi Home, or this panel's Change root password), type that one. If you no longer know it, factory-reset the router and start setup again.
+
+Router IP: $ROUTER_IP"
       else
         ssh "${SSH_OPTS[@]}" "root@$ROUTER_IP" "$INSTALL_CMD" \
           || die "Could not reach the router over SSH with that password either. Check that it's reachable at $ROUTER_IP."

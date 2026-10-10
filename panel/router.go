@@ -751,6 +751,19 @@ func parseDumpStatus(raw string) (map[string]any, error) {
 			PCI5G        loose  `json:"pci_5g"`
 			Roam         int    `json:"roam"`
 		} `json:"status"`
+		Network struct {
+			V4Addr string `json:"v4addr"`
+			V4GW   string `json:"v4gw"`
+			V4Mask string `json:"v4mask"`
+			V4DNS1 string `json:"v4dns1"`
+			V4DNS2 string `json:"v4dns2"`
+			V4MTU  int    `json:"v4mtu"`
+			V6Addr string `json:"v6addr"`
+			V6GW   string `json:"v6gw"`
+			V6DNS1 string `json:"v6dns1"`
+			V6DNS2 string `json:"v6dns2"`
+			V6MTU  int    `json:"v6mtu"`
+		} `json:"network"`
 	}
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 		return nil, routerErrf("Could not parse mobile status: %v", err)
@@ -801,7 +814,36 @@ func parseDumpStatus(raw string) (map[string]any, error) {
 		"sim_number":   simNumber(parsed.SIM.Number),
 		"sim_iccid":    parsed.SIM.ICCID,
 		"sim_country":  parsed.SIM.Country,
+		"wan_v4":       parsed.Network.V4Addr,
+		"wan_v4_gw":    parsed.Network.V4GW,
+		"wan_v4_mask":  parsed.Network.V4Mask,
+		"wan_v4_dns":   joinNonEmpty(", ", parsed.Network.V4DNS1, parsed.Network.V4DNS2),
+		"wan_v4_mtu":   parsed.Network.V4MTU,
+		"wan_v6":       cleanV6(parsed.Network.V6Addr),
+		"wan_v6_gw":    cleanV6(parsed.Network.V6GW),
+		"wan_v6_dns":   joinNonEmpty(", ", cleanV6(parsed.Network.V6DNS1), cleanV6(parsed.Network.V6DNS2)),
+		"wan_v6_mtu":   parsed.Network.V6MTU,
 	}, nil
+}
+
+// cleanV6 drops the "all zeros" address the daemon prints when no IPv6 is up.
+func cleanV6(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "0:0:0:0:0:0:0:0" || s == "::" {
+		return ""
+	}
+	return s
+}
+
+// joinNonEmpty joins parts with sep, skipping empty ones.
+func joinNonEmpty(sep string, parts ...string) string {
+	kept := parts[:0]
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			kept = append(kept, p)
+		}
+	}
+	return strings.Join(kept, sep)
 }
 
 // AT parsers for the cellular fallback. Formats confirmed live against the

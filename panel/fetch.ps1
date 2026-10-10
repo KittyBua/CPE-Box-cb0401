@@ -27,6 +27,21 @@ function Test-Go {
     } catch { return $false }
 }
 
+# True unless the release's SHA256SUMS lists a different hash for the asset,
+# so files rebuilt under the same tag are downloaded again. Can't check ->
+# keep the file that's here.
+function Test-MatchesRelease($Tag, $Asset, $File) {
+    try {
+        $sums = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 "https://github.com/$CpeBoxRepo/releases/download/$Tag/SHA256SUMS").Content
+        if ($sums -is [byte[]]) { $sums = [Text.Encoding]::ASCII.GetString($sums) }
+    } catch { return $true }
+    $line = ($sums -split "`n") | Where-Object { $_ -match "\s\*?$([regex]::Escape($Asset))\s*$" } | Select-Object -First 1
+    if (-not $line) { return $true }
+    $want = ($line.Trim() -split '\s+')[0]
+    $have = (Get-FileHash -Algorithm SHA256 $File).Hash
+    return $have.ToLower() -eq $want.ToLower()
+}
+
 function Get-LatestTag {
     try {
         (Invoke-RestMethod -Uri "https://api.github.com/repos/$CpeBoxRepo/releases/latest" -TimeoutSec 15 -UseBasicParsing).tag_name
@@ -51,7 +66,11 @@ function Ensure-GuiBin {
     if (Test-Go) {
         Write-Host 'Building CPE Box from source...'
         Push-Location $FetchDir
-        & go build -o $bin . | Out-Host
+        # Stamp the version from the git tag, the same way build.sh does for
+        # releases, so the panel doesn't show the placeholder version.
+        $ver = (& git describe --tags --always 2>$null)
+        if ($ver) { $ver = $ver.Trim() -replace '^v', '' } else { $ver = 'dev' }
+        & go build -ldflags="-X main.appVersion=$ver" -o $bin . | Out-Host
         $ok = $LASTEXITCODE -eq 0
         Pop-Location
         if ($ok) { return $true }
@@ -63,7 +82,7 @@ function Ensure-GuiBin {
         Write-Host "ERROR: couldn't reach GitHub to download CPE Box (and Go isn't installed to build it)."
         return $false
     }
-    if ((Test-Path $bin) -and ((Get-Content $stamp -ErrorAction SilentlyContinue) -eq $tag)) { return $true }
+    if ((Test-Path $bin) -and ((Get-Content $stamp -ErrorAction SilentlyContinue) -eq $tag) -and (Test-MatchesRelease $tag 'cpe-box-windows-amd64.exe' $bin)) { return $true }
     Write-Host "Downloading CPE Box $tag..."
     if (Get-ReleaseAsset $tag 'cpe-box-windows-amd64.exe' $bin) {
         Set-Content -Path $stamp -Value $tag -Encoding ascii

@@ -1,6 +1,6 @@
 'use strict';
-// System (health, lights, reboot, access, SSH, password, firmware) and
-// Console (raw commands).
+// System (health, lights, reboot, access, SSH, password, firmware), Speed
+// (speed test, ping & traceroute) and Console (raw commands).
 
 Views.system = { sources: ['health', 'leds', 'info', 'ssh', 'rname'] };
 
@@ -87,6 +87,167 @@ $('#spoofBtn').addEventListener('click', e => {
     setMsg('spoofMsg', 'Router now reports: ' + (d.reported || '0.0.1'), 'ok');
   }).catch(err => setMsg('spoofMsg', err.message, 'err'));
 });
+
+// ----------------------------------------------------------- speed test ---
+// A speedtest.net-style gauge: the arc spans 240°, with the same piecewise
+// log scale as Ookla's (0 5 10 50 100 250 500 750 1000), so slow links don't
+// huddle at the left. The backend runs the test in the background; the page
+// polls its state 4x a second and animates the needle towards the live rate.
+
+const ST_STOPS = [0, 5, 10, 50, 100, 250, 500, 750, 1000];
+const ST_SWEEP = 240; // degrees, from -120 to +120
+
+// position on the scale, 0..1
+function stPos(mbps) {
+  const v = Math.max(0, Math.min(ST_STOPS[ST_STOPS.length - 1], mbps || 0));
+  for (let i = 1; i < ST_STOPS.length; i++) {
+    if (v <= ST_STOPS[i]) return (i - 1 + (v - ST_STOPS[i - 1]) / (ST_STOPS[i] - ST_STOPS[i - 1])) / (ST_STOPS.length - 1);
+  }
+  return 1;
+}
+
+(function stBuildTicks() {
+  const g = $('#stTicks');
+  if (!g) return;
+  g.innerHTML = ST_STOPS.map((v, i) => {
+    const a = (-120 + i / (ST_STOPS.length - 1) * ST_SWEEP) * Math.PI / 180;
+    const sx = 150 + Math.sin(a) * 104, sy = 160 - Math.cos(a) * 104;
+    const ex = 150 + Math.sin(a) * 110, ey = 160 - Math.cos(a) * 110;
+    const tx = 150 + Math.sin(a) * 90, ty = 160 - Math.cos(a) * 90 + 4;
+    return `<line x1="${sx.toFixed(1)}" y1="${sy.toFixed(1)}" x2="${ex.toFixed(1)}" y2="${ey.toFixed(1)}"/><text x="${tx.toFixed(1)}" y="${ty.toFixed(1)}" data-v="${v}">${v}</text>`;
+  }).join('');
+})();
+
+const ST = { shown: 0, target: 0, raf: 0 };
+
+function stDraw() {
+  const p = stPos(ST.shown);
+  $('#stNeedle').style.transform = `rotate(${-120 + p * ST_SWEEP}deg)`;
+  $('#stFill').style.strokeDasharray = `${(p * 1000).toFixed(1)} 1000`;
+  $$('#stTicks text').forEach(t => t.classList.toggle('lit', +t.dataset.v <= ST.shown && ST.shown > 0));
+  setText('stLive', ST.shown > 0 ? ST.shown.toFixed(ST.shown < 100 ? 1 : 0) : '—');
+}
+// ease the needle towards the target between polls, so it moves like a dial
+function stAnimate() {
+  cancelAnimationFrame(ST.raf);
+  const step = () => {
+    const d = ST.target - ST.shown;
+    if (Math.abs(d) < 0.3) { ST.shown = ST.target; stDraw(); return; }
+    ST.shown += d * 0.08;
+    stDraw();
+    ST.raf = requestAnimationFrame(step);
+  };
+  ST.raf = requestAnimationFrame(step);
+}
+function stSetTarget(v) { ST.target = v || 0; stAnimate(); }
+
+const stFmt = v => v == null ? '—' : (+v).toFixed(v < 100 ? 1 : 0);
+
+function stRender(st) {
+  const g = $('#stGauge');
+  g.dataset.phase = st.phase || '';
+  $$('.st-res').forEach(r => r.classList.remove('active'));
+  if (st.server) { $('#stServer').hidden = false; setText('stServer', `${st.server.sponsor} · ${st.server.name}`); }
+  if (st.ping_ms) setText('stPing', stFmt(st.ping_ms));
+  // finished phases keep their number at the top, like speedtest.net
+  if (st.down_mbps) setText('stDown', stFmt(st.down_mbps));
+  if (st.up_mbps) setText('stUp', stFmt(st.up_mbps));
+  switch (st.phase) {
+    case 'server': setMsg('stMsg', 'Finding the nearest server…'); setText('stLiveLabel', ''); stSetTarget(0); break;
+    case 'ping': setMsg('stMsg', 'Measuring latency…'); setText('stLiveLabel', 'ping'); stSetTarget(0); break;
+    case 'download':
+      $('#stResDown').classList.add('active');
+      setMsg('stMsg', 'Testing download…'); setText('stLiveLabel', '↓ Mbps'); stSetTarget(st.mbps);
+      setText('stDown', st.mbps ? stFmt(st.mbps) : '…');
+      break;
+    case 'upload':
+      $('#stResUp').classList.add('active');
+      setMsg('stMsg', 'Testing upload…'); setText('stLiveLabel', '↑ Mbps'); stSetTarget(st.mbps);
+      setText('stUp', st.mbps ? stFmt(st.mbps) : '…');
+      break;
+    case 'done': {
+      const r = st.result || {};
+      setText('stDown', stFmt(r.down_mbps)); setText('stUp', stFmt(r.up_mbps)); setText('stPing', stFmt(r.ping_ms));
+      setText('stJitter', r.jitter_ms != null ? `jitter ${r.jitter_ms} ms` : '');
+      setText('stLiveLabel', 'Mbps'); stSetTarget(0);
+      setMsg('stMsg', 'Done', 'ok');
+      setText('stMeta', `${r.server || ''} · ${fmtBytes(r.bytes || 0)} of data used${st.client ? ` · from ${st.client}` : ''}`);
+      break;
+    }
+    case 'error':
+      ['stDown', 'stUp'].forEach(id => { if ($('#' + id).textContent === '…') setText(id, '—'); });
+      setText('stLiveLabel', 'Mbps'); stSetTarget(0);
+      setMsg('stMsg', st.error || 'Speed test failed', 'err');
+      break;
+  }
+}
+
+let stTimer = 0;
+async function stPoll() {
+  clearTimeout(stTimer);
+  try {
+    const st = await api('/api/speedtest');
+    stRender(st);
+    if (st.running) stTimer = setTimeout(stPoll, 250);
+    else { $('#stBtn').disabled = false; $('#stBtn').classList.remove('busy'); }
+  } catch (err) {
+    setMsg('stMsg', err.message, 'err');
+    $('#stBtn').disabled = false; $('#stBtn').classList.remove('busy');
+  }
+}
+
+$('#stBtn').addEventListener('click', async e => {
+  const btn = e.currentTarget;
+  btn.disabled = true; btn.classList.add('busy');
+  ['stDown', 'stUp', 'stPing'].forEach(id => setText(id, '—'));
+  setText('stJitter', ''); setText('stMeta', ''); $('#stServer').hidden = true;
+  try {
+    const host = $('#stServerPick').value || '';
+    stRender(await api('/api/speedtest', host ? { host } : {}));
+    stTimer = setTimeout(stPoll, 250);
+  } catch (err) {
+    setMsg('stMsg', err.message, 'err');
+    btn.disabled = false; btn.classList.remove('busy');
+  }
+});
+// Its own tab; a test started from another tab/device keeps showing here too.
+Views.speed = { sources: [], show() { stPoll(); stLoadServers(); } };
+
+async function stLoadServers() {
+  const sel = $('#stServerPick');
+  if (sel.dataset.loaded) return;
+  sel.dataset.loaded = '1';
+  try {
+    const list = await api('/api/speedtest/servers');
+    for (const s of arr(list)) {
+      const o = document.createElement('option');
+      o.value = s.host || '';
+      o.textContent = `${s.sponsor}${s.name ? ' · ' + s.name : ''}`;
+      sel.appendChild(o);
+    }
+  } catch (e) { /* keep "Auto (nearest)" only */ }
+}
+
+// -------------------------------------------------- ping & traceroute ---
+
+$('#diagForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const host = $('#diagHost').value.trim(), tool = $('#diagTool').value;
+  const out = $('#diagOut');
+  out.hidden = false;
+  out.textContent = tool === 'ping' ? `Pinging ${host}…` : `Tracing the route to ${host} - can take up to a minute…`;
+  withBusy($('#diagBtn'), async () => {
+    const d = await api('/api/diag', { tool, host });
+    out.textContent = d.output || '(no output)';
+    if (tool === 'traceroute' && !/^\s*\d+\s+[\d.:a-f]+\s/m.test(d.output || '')) {
+      out.textContent += "\n\nNo hop answered. Common on IPv6-only mobile networks (464XLAT, the router's WAN shows 192.0.0.x): the hop replies don't make it back through the translation. Ping still shows whether the host is reachable.";
+    }
+  }).catch(err => { out.textContent = err.message; });
+});
+$$('[data-diag-host]').forEach(b => b.addEventListener('click', () => {
+  $('#diagHost').value = b.dataset.diagHost;
+  $('#diagForm').requestSubmit();
+}));
 
 // --------------------------------------------------------------- console ---
 
