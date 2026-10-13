@@ -178,3 +178,49 @@ func TestParseCellLockV1PCIFromMeasReport(t *testing.T) {
 		t.Errorf("serving_nr = %v, want PCI 459 n1", s)
 	}
 }
+
+// Live reply from suprruser44 (issue #1): on v1, QCAINFO writes a placeholder
+// "SCC",0,0,"NR5G BAND 0",0 for the NR leg even though the modem is on NR
+// (QNWINFO + QENG show NR5G-NSA with ARFCN 427730). The panel must synthesize
+// a NR carrier from QENG so Nearby doesn't show it as a neighbour.
+func TestParseCellLockV1NRFromQENG(t *testing.T) {
+	raw := `+QCAINFO: "PCC",1276,75,"LTE BAND 3",1,494,-92,-12,-60,20
++QCAINFO: "SCC",3350,100,"LTE BAND 7",2,495,-121,-15,-86,4,0,-,-
++QCAINFO: "SCC",0,0,"NR5G BAND 0",0
+
++QENG: "servingcell","NOCONN"
++QENG: "LTE","FDD",202,10,4B20B,494,1276,3,4,4,C4C2,-92,-10,-64,18,9,140,-
++QENG: "NR5G-NSA",202,10,0,-91,210,-11,427730,0,0,0
+
++QNWCFG: "nr5g_meas_info",1,427730,494,-93,-11
+`
+	got := parseCellLock(raw)
+	car := got["carriers"].([]radioCell)
+	var nr *radioCell
+	for i := range car {
+		if car[i].RAT == "NR" {
+			nr = &car[i]
+		}
+	}
+	if nr == nil {
+		t.Fatalf("no NR carrier synthesized from QENG; got %+v", car)
+	}
+	if nr.Band != "n1" || nr.Arfcn != 427730 {
+		t.Errorf("NR band/arfcn = %s/%d, want n1/427730", nr.Band, nr.Arfcn)
+	}
+	if nr.PCI != 494 {
+		t.Errorf("NR PCI = %d, want 494 (from meas report)", nr.PCI)
+	}
+	if nr.RSRP != "-91" || nr.RSRQ != "-11" {
+		t.Errorf("NR RSRP/RSRQ = %s/%s, want -91/-11", nr.RSRP, nr.RSRQ)
+	}
+	if nr.SINR != "21" {
+		t.Errorf("NR SINR = %s, want 21 (210 deci-dB normalised)", nr.SINR)
+	}
+	// NR neighbour on the same ARFCN must be marked serving (filtered out of Nearby)
+	for _, n := range got["neighbours"].([]radioCell) {
+		if n.RAT == "NR" && n.Arfcn == 427730 && !n.Serving {
+			t.Errorf("NR neighbour on serving ARFCN should be marked serving: %+v", n)
+		}
+	}
+}

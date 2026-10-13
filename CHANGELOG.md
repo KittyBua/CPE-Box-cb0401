@@ -14,6 +14,13 @@ Because the notes live in this file, Markdown headings work as-is — no
 `--cleanup=verbatim` needed on the tag. Everything up to the next `## vX.Y.Z`
 heading belongs to a version; use `##` for the subsections within it.
 
+## v1.0.11 — v1 NR synthesis, fewer bogus "neighbours"
+
+## Fixes
+
+- **LTE SCC in 3-CA showed impossible signal values** on cb0401 v1 (e.g. `RSRP -14, RSRQ 49`). The modem itself returns those in that configuration - fields are at the right offsets, values are bogus. The row is kept (the carrier aggregation is real, so PCI/EARFCN stay visible) but the signal columns are hidden when they are physically out of range (RSRP outside -140..-44, RSRQ outside -34..0).
+- **"Cells around" showed the connected 5G as a neighbour on cb0401 v1** (`AT+QNWINFO` + `AT+QENG` report an active NR5G-NSA cell, but `AT+QCAINFO` writes a placeholder `"SCC",0,0,"NR5G BAND 0",0` for it). The panel now synthesizes the NR carrier from `QENG` (ARFCN, band, RSRP/SINR/RSRQ) and takes PCI from the NR measurement report, so the connected cell is listed as PCC and the same ARFCN is filtered out of Nearby.
+
 ## v1.0.10 — speed test with a live gauge, SIM contacts, cells around + cell lock, ping & traceroute, RSSI, own number on the SIM
 
 ## New

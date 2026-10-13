@@ -70,6 +70,20 @@ func cellKey(rat string, arfcn, pci int) string {
 // nrSCS maps the QENG <scs> code to kHz, the unit QNWLOCK takes.
 var nrSCS = map[string]int{"0": 15, "1": 30, "2": 60, "3": 120, "4": 240}
 
+// lteSignalsPlausible: cb0401 v1 SCC lines in 3-CA sometimes come back with
+// physically impossible values (seen: RSRP=-14, RSRQ=49). RSRP for LTE lives
+// in -140..-44 dBm per 3GPP TS 36.133, RSRQ in -34..0 dB. Reject anything
+// well outside those - the SCC is real but its signal column is garbage.
+func lteSignalsPlausible(rsrp, rsrq string) bool {
+	if v, err := strconv.ParseFloat(strings.TrimSpace(rsrp), 64); err == nil && (v > -40 || v < -145) {
+		return false
+	}
+	if v, err := strconv.ParseFloat(strings.TrimSpace(rsrq), 64); err == nil && (v > 0 || v < -35) {
+		return false
+	}
+	return true
+}
+
 // lteEarfcnBands: downlink EARFCN ranges per LTE band (3GPP TS 36.101).
 var lteEarfcnBands = []struct{ lo, hi, band int }{
 	{0, 599, 1}, {600, 1199, 2}, {1200, 1949, 3}, {1950, 2399, 4}, {2400, 2649, 5},
@@ -159,12 +173,13 @@ func parseCellLock(raw string) map[string]any {
 			}
 		}
 	}
+	// NR fields for a synthetic carrier when QCAINFO has none: pci, arfcn, band, rsrp, sinr, rsrq.
 	if f := qengFields(raw, `"NR5G-NSA",`); len(f) >= 10 {
-		qengNR, scs = []string{f[2], f[6], f[7]}, nrSCS[f[9]]
+		qengNR, scs = []string{f[2], f[6], f[7], f[3], f[4], f[5]}, nrSCS[f[9]]
 	} else if f := qengFields(raw, `"NR5G-SA",`); len(f) >= 10 {
-		qengNR, scs = []string{f[2], f[6], f[7]}, nrSCS[f[9]]
+		qengNR, scs = []string{f[2], f[6], f[7], f[3], f[4], f[5]}, nrSCS[f[9]]
 	} else if f := qengFields(raw, `"servingcell",`); len(f) >= 15 && f[1] == "NR5G-SA" {
-		qengNR, scs = []string{f[6], f[8], f[9]}, nrSCS[f[14]]
+		qengNR, scs = []string{f[6], f[8], f[9], f[11], f[13], f[12]}, nrSCS[f[14]]
 	}
 
 	// Carriers from QCAINFO. LTE: earfcn,bw,"LTE BAND n",state,pci,rsrp,rsrq,
@@ -245,6 +260,12 @@ func parseCellLock(raw string) map[string]any {
 			if m[1] == "SCC" && (c.SINR == "0" || c.SINR == "0.0") {
 				c.SINR = ""
 			}
+			// 3-CA on cb0401 v1 can return impossible RSRP/RSRQ for an SCC
+			// (e.g. RSRP=-14, RSRQ=49). Keep the row (the CA is real), drop
+			// the garbage column.
+			if m[1] == "SCC" && !lteSignalsPlausible(c.RSRP, c.RSRQ) {
+				c.RSRP, c.RSRQ, c.RSSI, c.SINR = "", "", "", ""
+			}
 			if qcaInactive(strings.Join(f[5:], ",")) {
 				continue // a configured SCC with no signal isn't in use
 			}
@@ -252,6 +273,45 @@ func parseCellLock(raw string) map[string]any {
 		c.Serving = true
 		c.Key = cellKey(c.RAT, c.Arfcn, c.PCI)
 		carriers = append(carriers, c)
+	}
+	// If QCAINFO had no NR row but QENG shows a live NR5G-NSA/SA leg (v1 writes
+	// a placeholder "SCC",0,0,"NR5G BAND 0",0 for the NR carrier), synthesize a
+	// carrier from the QENG line so the Cells-around card and the Nearby filter
+	// know about it. Signal values come from QENG; PCI falls back to the NR
+	// measurement report when QENG also reports 0.
+	hasNR := false
+	for _, c := range carriers {
+		if c.RAT == "NR" {
+			hasNR = true
+			break
+		}
+	}
+	if !hasNR && qengNR != nil {
+		pci, ok1 := atoiDash(qengNR[0])
+		arfcn, ok2 := atoiDash(qengNR[1])
+		band, _ := atoiDash(qengNR[2])
+		if band == 0 {
+			band = nrBandFromArfcn(qengNR[1])
+		}
+		if pci == 0 && arfcn > 0 {
+			if m := nrMeasRe.FindStringSubmatch(raw); m != nil {
+				fs := strings.Split(strings.TrimPrefix(m[2], ","), ",")
+				for i := 0; i+1 < len(fs); i += 4 {
+					if a, ok := atoiDash(fs[i]); ok && a == arfcn {
+						if p, ok := atoiDash(fs[i+1]); ok && p > 0 {
+							pci = p
+							break
+						}
+					}
+				}
+			}
+		}
+		if ok1 && ok2 && band > 0 && arfcn > 0 {
+			c := radioCell{RAT: "NR", Role: "PCC", Band: "n" + strconv.Itoa(band), Arfcn: arfcn, PCI: pci, Serving: true}
+			c.RSRP, c.SINR, c.RSRQ = qengNR[3], normalizeNrSinr(qengNR[4]), qengNR[5]
+			c.Key = cellKey(c.RAT, c.Arfcn, c.PCI)
+			carriers = append(carriers, c)
+		}
 	}
 	if carriers == nil {
 		carriers = []radioCell{}
