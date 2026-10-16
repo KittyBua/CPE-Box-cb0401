@@ -82,6 +82,7 @@ const Sources = {
   autopin:  { url: '/api/stock?a=autopin', every: 120000 },
   simstatus: { url: '/api/stock?a=simstatus', every: 15000 },
   sms:      { url: '/api/stock?a=sms',     every: 30000 },
+  simsms:   { url: '/api/sim-sms',         every: 60000 },
   contacts: { url: '/api/contacts',        every: 300000 },
   lan:      { url: '/api/stock?a=lan',     every: 300000 },
   dhcp:     { url: '/api/stock?a=dhcp',    every: 300000 },

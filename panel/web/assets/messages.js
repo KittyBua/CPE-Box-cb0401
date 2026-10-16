@@ -2,7 +2,7 @@
 // Messages: the SIM's SMS inbox, conversations, sending and deleting,
 // through the stock SMS actions.
 
-Views.messages = { sources: ['sms', 'contacts'], show() {
+Views.messages = { sources: ['sms', 'simsms', 'contacts'], show() {
   const to = viewQuery.get('to');
   if (to) { history.replaceState(null, '', '#messages'); composeTo(to); }
   else if (Sms.peer) loadThread();
@@ -36,13 +36,17 @@ function fmtSmsDate(m) {
     : d.toLocaleDateString([], { day: 'numeric', month: 'short' });
 }
 
+on('simsms', () => { if (Sources.sms.data) publish('sms', Sources.sms.data); });
+
 on('sms', (d, err) => {
   const box = $('#smsList');
   if (!d) {
     if (err) box.innerHTML = `<div class="empty">${esc(err.message)}</div>`;
     return;
   }
-  const list = arr(d.msgbox);
+  const simRows = arr(Sources.simsms.data).map(r => ({ ...r, storage: 'SM' }));
+  const list = arr(d.msgbox).map(r => ({ ...r, storage: r.storage || 'ME' })).concat(simRows);
+  list.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
   const unread = list.filter(isUnread).length;
   setText('smsCount', unread ? `${unread} unread` : `${list.length} conversation${list.length === 1 ? '' : 's'}`);
   const badge = $('#unreadCount');
@@ -176,9 +180,17 @@ $('#smsText').addEventListener('keydown', e => {
 });
 
 $('#smsDelete').addEventListener('click', e => {
-  if (!Sms.peer || !confirm(`Delete the whole conversation with ${peerName(Sms.peer)} from the SIM?`)) return;
+  if (!Sms.peer) return;
+  const simRow = arr(Sources.simsms.data).find(m => m.contact_phone === Sms.peer || m.msg_id === Sms.lastId);
+  const where = simRow ? 'SIM' : 'modem';
+  if (!confirm(`Delete the whole conversation with ${peerName(Sms.peer)} from the ${where}?`)) return;
   withBusy(e.currentTarget, async () => {
-    await stock('sms_delete', Sms.peerRaw ? { phoneList_b64: Sms.peerRaw } : { phoneList: Sms.peer }, ['sms']);
+    if (simRow) {
+      await api('/api/sim-sms', { delete: true, index: simRow.msg_id });
+      refresh('simsms');
+    } else {
+      await stock('sms_delete', Sms.peerRaw ? { phoneList_b64: Sms.peerRaw } : { phoneList: Sms.peer }, ['sms']);
+    }
     toast('Conversation deleted');
     Sms.peer = null;
     setText('smsPeer', 'Pick a conversation');

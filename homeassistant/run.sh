@@ -10,7 +10,8 @@ ROUTER_PW="$(bashio::config 'router_password')"
 NOTIFY_BACKEND="$(bashio::config 'notify_backend')"
 TELEGRAM_BOT_TOKEN="$(bashio::config 'telegram_bot_token')"
 TELEGRAM_CHAT_ID="$(bashio::config 'telegram_chat_id')"
-export ROUTER_IP NOTIFY_BACKEND TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID
+GUI_FRAME_ANCESTORS="$(bashio::config 'frame_ancestors')"
+export ROUTER_IP NOTIFY_BACKEND TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID GUI_FRAME_ANCESTORS
 
 if [ -z "$ROUTER_PW" ]; then
   bashio::exit.nok "Set 'router_password' (the router's root password) in the add-on configuration, then restart."
@@ -42,11 +43,12 @@ fi
 install -d -m 700 "$APP/panel"
 ENV="$APP/panel/.env"
 KEEP=""
-[ -f "$ENV" ] && KEEP="$(grep -vE '^(ROUTER_IP|ROUTER_ROOT_PASSWORD|GUI_BIND)=' "$ENV" || true)"
+[ -f "$ENV" ] && KEEP="$(grep -vE '^(ROUTER_IP|ROUTER_ROOT_PASSWORD|GUI_BIND|GUI_FRAME_ANCESTORS)=' "$ENV" || true)"
 {
   printf 'ROUTER_IP=%s\n' "$ROUTER_IP"
   printf 'ROUTER_ROOT_PASSWORD=%s\n' "$ROUTER_PW"
   printf 'GUI_BIND=0.0.0.0:7777\n'
+  [ -n "$GUI_FRAME_ANCESTORS" ] && printf 'GUI_FRAME_ANCESTORS=%s\n' "$GUI_FRAME_ANCESTORS"
   [ -n "$KEEP" ] && printf '%s\n' "$KEEP"
 } > "$ENV"
 chmod 600 "$ENV"

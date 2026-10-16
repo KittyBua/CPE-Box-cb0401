@@ -350,3 +350,27 @@ func TestQcaInactive(t *testing.T) {
 		}
 	}
 }
+
+// alen0038's issue #3 capture: AT+CGPADDR returns IPv6 as 16 decimal octets.
+func TestParseCGPADDR(t *testing.T) {
+	raw := "+CGPADDR: 1,\"42.1.5.153.2.6.50.201.235.23.86.117.149.80.113.211\"\n" +
+		"+CGPADDR: 2,\"42.1.5.159.216.24.19.117.149.208.106.196.24.161.190.155\"\n" +
+		"+CGPADDR: 3,\"0.0.0.0\",\"0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0\"\n"
+	v4, v6 := parseCGPADDR(raw)
+	if v4 != "" {
+		t.Errorf("v4 = %q, want empty (IPv6-only context)", v4)
+	}
+	if v6 != "2a01:599:206:32c9:eb17:5675:9550:71d3" {
+		t.Errorf("v6 = %q", v6)
+	}
+	// Dual-stack row with a real v4
+	raw2 := `+CGPADDR: 1,"10.188.252.14","42.1.5.153.2.6.50.201.235.23.86.117.149.80.113.211"`
+	v4, v6 = parseCGPADDR(raw2)
+	if v4 != "10.188.252.14" || v6 != "2a01:599:206:32c9:eb17:5675:9550:71d3" {
+		t.Errorf("dual = %q / %q", v4, v6)
+	}
+	// All-zero only
+	if a, b := parseCGPADDR(`+CGPADDR: 1,"0.0.0.0"`); a != "" || b != "" {
+		t.Errorf("all-zero = %q/%q", a, b)
+	}
+}

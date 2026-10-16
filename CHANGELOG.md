@@ -14,6 +14,14 @@ Because the notes live in this file, Markdown headings work as-is — no
 `--cleanup=verbatim` needed on the tag. Everything up to the next `## vX.Y.Z`
 heading belongs to a version; use `##` for the subsections within it.
 
+## v1.0.12 — SMS on the SIM, iframe-embed opt-in
+
+## New
+
+- **WAN IP card was empty on cb0401 v1 and whenever the stock daemon didn't populate the address.** On v1 `ubus call mobile dump_status` returns no `network.v4addr`/`v6addr` fields; on v2 the v6 came back as all zeros even when the modem had an IPv6. Now the panel falls back to `AT+CGPADDR` and parses both forms: dotted IPv4 and the 16-decimal-octet IPv6 the modem writes (e.g. `42.1.5.153...` → `2a01:599:206:32c9:...`). Reported by @alen0038 (#3).
+- **SMS stored on the SIM are now shown too.** The modem defaults `AT+CPMS` to its own flash (ME), which is what the stock daemon reads - SMS saved to the SIM card (`SM`) stayed invisible. The panel now reads the SIM storage separately over AT (UCS2, so umlauts/Cyrillic survive) and merges it with the modem's inbox, newest first. Delete routes to the right storage automatically. Fixes @KittyBua's "we can't see our SMS anymore" case where incoming messages are going to the SIM.
+- **Embed the panel in Home Assistant (or any dashboard) as an iframe.** New HA add-on option `frame_ancestors` (or `GUI_FRAME_ANCESTORS` env for standalone installs) takes a space-separated list of origins, e.g. `http://homeassistant.local:8123`. When set, the panel replies with `Content-Security-Policy: frame-ancestors 'self' <origins>` instead of the default `X-Frame-Options: SAMEORIGIN`, so a Webpage card loads it instead of `ERR_BLOCKED_BY_RESPONSE`. Fixes @suprruser44's HA dashboard embed. Full HA Ingress support is a bigger refactor and isn't in this release.
+
 ## v1.0.11 — v1 NR synthesis, fewer bogus "neighbours"
 
 ## Fixes

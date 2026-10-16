@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"regexp"
@@ -568,6 +569,7 @@ func getCellularInfo() (map[string]any, error) {
 	if derr == nil {
 		if info, perr := parseDumpStatus(raw); perr == nil {
 			fillMissingSINR(info)
+			fillMissingWAN(info)
 			return info, nil
 		}
 	}
@@ -581,7 +583,82 @@ func getCellularInfo() (map[string]any, error) {
 		}
 		return nil, aerr
 	}
+	fillMissingWAN(info)
 	return info, nil
+}
+
+// cgpaddrRe matches one +CGPADDR row: cid, up to two quoted addresses.
+var cgpaddrRe = regexp.MustCompile(`\+CGPADDR:\s*\d+,\s*"([^"]*)"(?:\s*,\s*"([^"]*)")?`)
+
+// parseCGPADDR pulls the first non-zero IPv4 and IPv6 out of a reply block.
+// The modem reports each PDP context as either an IPv4 ("A.B.C.D"), an IPv6
+// written as 16 decimal octets ("42.1.5...71.3"), or both when IPV4V6.
+func parseCGPADDR(raw string) (v4, v6 string) {
+	for _, m := range cgpaddrRe.FindAllStringSubmatch(raw, -1) {
+		for _, a := range []string{m[1], m[2]} {
+			a = strings.TrimSpace(a)
+			if a == "" {
+				continue
+			}
+			oct := strings.Split(a, ".")
+			switch len(oct) {
+			case 4:
+				if v4 == "" && a != "0.0.0.0" {
+					v4 = a
+				}
+			case 16:
+				if ip := decodeV6Octets(oct); ip != "" && v6 == "" {
+					v6 = ip
+				}
+			}
+		}
+	}
+	return v4, v6
+}
+
+// decodeV6Octets turns 16 decimal octets ("42.1.5...71.3") into "2a01:...".
+// Returns "" for the all-zero address.
+func decodeV6Octets(oct []string) string {
+	all0 := true
+	buf := make([]byte, 16)
+	for i, s := range oct {
+		n, err := strconv.Atoi(strings.TrimSpace(s))
+		if err != nil || n < 0 || n > 255 {
+			return ""
+		}
+		if n != 0 {
+			all0 = false
+		}
+		buf[i] = byte(n)
+	}
+	if all0 {
+		return ""
+	}
+	ip := net.IP(buf).String() // uses the standard :: shortening
+	return ip
+}
+
+// fillMissingWAN backfills the operator-assigned WAN addresses from AT+CGPADDR
+// when dump_status didn't carry them (seen on cb0401 v1, issue #3) or when the
+// AT fallback path built the info - CGPADDR is the modem's own view of what the
+// network handed out and works regardless of the stock daemon's shape.
+func fillMissingWAN(info map[string]any) {
+	needV4 := info["wan_v4"] == nil || info["wan_v4"] == "" || info["wan_v4"] == "0.0.0.0"
+	needV6 := info["wan_v6"] == nil || info["wan_v6"] == ""
+	if !needV4 && !needV6 {
+		return
+	}
+	raw, err := atQuery([]string{"AT+CGPADDR"}, 600*time.Millisecond)
+	if err != nil {
+		return
+	}
+	v4, v6 := parseCGPADDR(raw)
+	if needV4 && v4 != "" {
+		info["wan_v4"] = v4
+	}
+	if needV6 && v6 != "" {
+		info["wan_v6"] = v6
+	}
 }
 
 // fillMissingSINR backfills SINR from the modem's own AT+QENG when the stock

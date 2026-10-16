@@ -1,5 +1,5 @@
 name: CPE Box
-version: "1.0.11"
+version: "1.0.12"
 slug: cpe_box
 description: Local panel for the Xiaomi CB0401 / CB0401V2 5G CPE, driven over SSH to the router. Opens on port 7777.
 url: https://github.com/Kreal-exe/CPE-Box-cb0401
@@ -16,9 +16,14 @@ options:
   notify_backend: ntfy
   telegram_bot_token: ""
   telegram_chat_id: ""
+  # Add your Home Assistant URL here to embed the panel in an HA iframe card:
+  #   frame_ancestors: "http://homeassistant.local:8123 http://192.168.1.10:8123"
+  # Leave empty to keep the strict X-Frame-Options: SAMEORIGIN default.
+  frame_ancestors: ""
 schema:
   router_ip: str
   router_password: password
   notify_backend: list(ntfy|telegram)
   telegram_bot_token: str?
   telegram_chat_id: str?
+  frame_ancestors: str?

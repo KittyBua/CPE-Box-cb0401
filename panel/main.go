@@ -55,7 +55,17 @@ func serveTemplate(w http.ResponseWriter, name string) {
 	b = bytes.ReplaceAll(b, []byte("{{v}}"), []byte(assetVersion()))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+	// By default the panel refuses to be embedded in an <iframe> on another
+	// origin (X-Frame-Options: SAMEORIGIN). Users running inside Home Assistant
+	// (or any other dashboard) can set GUI_FRAME_ANCESTORS to a space-separated
+	// list of origins to allow, e.g. "http://homeassistant.local:8123". We then
+	// switch to a CSP frame-ancestors header (strictly more precise than XFO,
+	// which doesn't support multiple origins) with the Origin whitelisted.
+	if allow := getenv("GUI_FRAME_ANCESTORS", ""); allow != "" {
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'self' "+allow)
+	} else {
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+	}
 	_, _ = w.Write(b)
 }
 
@@ -354,6 +364,33 @@ func handleContacts(w http.ResponseWriter, r *http.Request) {
 		}
 		ok(w, v)
 	}
+}
+
+func handleSimSMS(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var body struct {
+			Delete bool `json:"delete"`
+			Index  int  `json:"index"`
+		}
+		decodeBody(r, &body)
+		if !body.Delete {
+			errResp(w, routerErrf("missing delete:true"))
+			return
+		}
+		if err := deleteSIMSMS(body.Index); err != nil {
+			errResp(w, err)
+			return
+		}
+		invalidate("simsms")
+		ok(w, map[string]bool{"deleted": true})
+		return
+	}
+	v, err := cached("simsms", 30*time.Second, func() (any, error) { return readSIMSMS() })
+	if err != nil {
+		errResp(w, err)
+		return
+	}
+	ok(w, v)
 }
 
 func handleBands(w http.ResponseWriter, r *http.Request) {
@@ -736,6 +773,7 @@ func main() {
 	mux.HandleFunc("/api/smsc", handleSMSC)
 	mux.HandleFunc("/api/bands", requireMethod(http.MethodPost, handleBands))
 	mux.HandleFunc("/api/sim-number", requireMethod(http.MethodPost, handleSIMNumber))
+	mux.HandleFunc("/api/sim-sms", handleSimSMS)
 	mux.HandleFunc("/api/contacts", handleContacts)
 	mux.HandleFunc("/api/cell-lock", handleCellLock)
 	mux.HandleFunc("/api/diag", requireMethod(http.MethodPost, handleDiag))
