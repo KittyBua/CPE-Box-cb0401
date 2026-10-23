@@ -128,19 +128,21 @@ func routerErrf(format string, a ...any) error {
 func runSSHRaw(useKey bool, cmd string, timeout time.Duration) (stdout, stderr string, exitCode int, timedOut, notFound bool, err error) {
 	var name string
 	var args []string
-	if useKey {
-		name = "ssh"
-		// BatchMode: never fall back to an interactive password prompt on the
-		// key attempt. Without it a rejected key (or a stuck control socket)
-		// leaves ssh waiting on "root@host's password:" until our deadline,
-		// surfacing as a confusing "Timed out running" instead of a fast 255
-		// that run() can retry with the password. sshpass (below) needs
-		// password auth, so BatchMode is only set here, on the key path.
-		args = append([]string{"-i", keyPath, "-o", "BatchMode=yes"}, sshOpts()...)
-	} else {
-		name = "sshpass"
-		args = append([]string{"-p", routerPass, "ssh"}, sshOpts()...)
+	// Password-auth path doesn't shell out any more: use the Go SSH client
+	// directly, which (1) removes the sshpass dependency (Windows and bare
+	// Linux containers don't ship it), (2) keeps the password out of the
+	// process arg list, and (3) is identical across platforms.
+	if !useKey {
+		return runSSHPassword(cmd, timeout)
 	}
+
+	name = "ssh"
+	// BatchMode: never fall back to an interactive password prompt on the
+	// key attempt. Without it a rejected key (or a stuck control socket)
+	// leaves ssh waiting on "root@host's password:" until our deadline,
+	// surfacing as a confusing "Timed out running" instead of a fast 255
+	// that run() can retry with the password.
+	args = append([]string{"-i", keyPath, "-o", "BatchMode=yes"}, sshOpts()...)
 	args = append(args, "root@"+routerIP, cmd)
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -214,8 +216,8 @@ func run(cmd string, timeout time.Duration) (string, error) {
 		stdout2, stderr2, code2, timedOut2, notFound2, err2 := runSSHRaw(false, cmd, timeout)
 		if notFound2 {
 			return "", routerErrf(
-				"SSH key login failed and the password fallback could not run (%v). "+
-					`If "sshpass" isn't installed, either install it or re-run setup to reinstall the SSH key.`, err2)
+				"SSH key login failed and no router password is on file to retry with (%v). "+
+					"Re-run setup to reinstall the SSH key, or set ROUTER_ROOT_PASSWORD in panel/.env.", err2)
 		}
 		if err2 != nil {
 			return "", routerErrf("SSH error running %q (password fallback): %v", cmd, err2)
@@ -2421,8 +2423,9 @@ func sendNotifyWelcomeMessage() {
 		"<MAC or IP> trust - whitelists a specific device\n" +
 		"block - blocks the last unrecognized device seen\n" +
 		"<MAC or IP> block - blocks a specific device\n" +
+		"unblock / <MAC or IP> unblock - lifts a block without trusting the device\n" +
 		"red alert - locks Wi-Fi to only whitelisted devices (briefly disconnects everyone, including trusted devices - there's no way around that on this hardware)\n" +
-		"all clear - undoes red alert, back to normal"
+		"all clear (or red alert off) - undoes red alert, back to normal"
 	b64 := base64.StdEncoding.EncodeToString([]byte(msg))
 	cmd := fmt.Sprintf(`. %s/notify_common.sh && notify "Welcome" "wave" "$(echo %s | base64 -d)"`, devmonDir, b64)
 	_, _ = run(cmd, 10*time.Second)
@@ -2440,6 +2443,7 @@ type deviceEntry struct {
 type deviceMonitorState struct {
 	Devices   []deviceEntry `json:"devices"`
 	Whitelist []string      `json:"whitelist"`
+	Blocked   []string      `json:"blocked"` // MACs with a "Block <MAC>" firewall rule (panel lock / Telegram "block")
 	Notify    notifyConfig  `json:"notify"`
 }
 
@@ -2522,7 +2526,44 @@ ip neigh show 2>/dev/null | awk '$5 ~ /^[0-9a-fA-F:]{17}$/ && $6 == "REACHABLE" 
 		}
 	}
 	sort.Strings(whitelist)
-	return deviceMonitorState{Devices: devices, Whitelist: whitelist, Notify: getNotifyConfig()}, nil
+
+	// Devices blocked from the network: the firewall rules the Telegram
+	// "block" command (router/command_watcher.sh) and the panel's lock both
+	// write, named firewall.block_AA_BB_CC_DD_EE_FF with a src_mac.
+	blockedRaw, _ := run(`uci -q show firewall 2>/dev/null | sed -n "s/^firewall\.block_[^.]*\.src_mac='\(.*\)'$/\1/p"`, 0)
+	blocked := []string{}
+	for _, l := range strings.Fields(blockedRaw) {
+		if l = strings.ToUpper(l); macRe.MatchString(l) {
+			blocked = append(blocked, l)
+		}
+	}
+	sort.Strings(blocked)
+	return deviceMonitorState{Devices: devices, Whitelist: whitelist, Blocked: blocked, Notify: getNotifyConfig()}, nil
+}
+
+// setDeviceBlocked blocks (or unblocks) a device from the network the same
+// way the Telegram "block" command does: a firewall REJECT rule on its MAC
+// from the LAN zone, kept across reboots in /etc/config/firewall.
+func setDeviceBlocked(mac string, block bool) (deviceMonitorState, error) {
+	mac = strings.ToUpper(strings.TrimSpace(mac))
+	if !macRe.MatchString(mac) {
+		return deviceMonitorState{}, routerErrf("Not a MAC address: %q", mac)
+	}
+	rule := "block_" + strings.ReplaceAll(mac, ":", "_")
+	var cmd string
+	if block {
+		cmd = fmt.Sprintf(`uci -q delete firewall.%[1]s; uci set firewall.%[1]s=rule && uci set firewall.%[1]s.name='Block %[2]s' && uci set firewall.%[1]s.src='lan' && uci set firewall.%[1]s.src_mac='%[2]s' && uci set firewall.%[1]s.target='REJECT' && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1; echo OK`, rule, mac)
+	} else {
+		cmd = fmt.Sprintf(`uci -q delete firewall.%[1]s; uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1; echo OK`, rule)
+	}
+	out, err := run(cmd, 30*time.Second)
+	if err != nil {
+		return deviceMonitorState{}, err
+	}
+	if !strings.Contains(out, "OK") {
+		return deviceMonitorState{}, routerErrf("The router didn't confirm the change: %s", strings.TrimSpace(out))
+	}
+	return getDeviceMonitorState()
 }
 
 // setDeviceWhitelist fully replaces the MAC whitelist on the router

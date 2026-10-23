@@ -58,7 +58,7 @@ host_short="$4"
 [ -z "$host_short" ] || [ "$host_short" = "*" ] && host_short="unnamed"
 
 notify "New device" "warning" "$mac_u | $3 | $host_short
-Reply: trust / block / red alert" || return 0
+Reply: trust / block / unblock / red alert" || return 0
 # Only mark this MAC as notified once the alert actually got delivered - a
 # transient failure here (network blip, backend hiccup) should let it
 # retry on the device's next DHCP event instead of being silently and

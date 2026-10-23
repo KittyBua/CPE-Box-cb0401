@@ -62,12 +62,6 @@ Say 'Checking prerequisites'
 if (-not (Get-Command ssh -ErrorAction SilentlyContinue)) {
     Die "ssh.exe was not found. On Windows 10/11, enable it with:`n  Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0`nthen re-run this script."
 }
-if (-not (Get-Command sshpass -ErrorAction SilentlyContinue)) {
-    Write-Host "Note: 'sshpass' isn't available on Windows by default. The GUI only needs it to"
-    Write-Host "self-heal automatically if it ever loses SSH key access (e.g. after a factory-reset-"
-    Write-Host "like event on the router) - everything in this script works fine without it. If that"
-    Write-Host "ever happens, just re-run this script to reinstall the key."
-}
 
 New-Item -ItemType Directory -Force -Path (Split-Path $KeyPath) | Out-Null
 if (-not (Test-Path $KeyPath)) {

@@ -603,3 +603,14 @@ a.button.ghost:hover { color: var(--text); background: var(--card-hi); border-co
 .cell-sig { grid-column: 2 / 4; height: 3px; border-radius: 2px; background: color-mix(in srgb, var(--text) 7%, transparent); overflow: hidden; }
 .cell-sig i { display: block; height: 100%; border-radius: 2px; }
 @media (max-width: 480px) { .cell-row { gap: 4px 10px; } .cell-act { flex-direction: column-reverse; gap: 4px; } .cell-act .small { padding: 6px 9px; } .cell-sig { grid-column: 1 / 4; } }
+
+/* device lock (block) next to the trust switch */
+.dev .end { gap: 8px; }
+.lock-btn { position: relative; width: 32px; height: 32px; padding: 0; border-radius: 10px; display: grid; place-items: center; color: var(--faint); background: transparent; border: 1px solid transparent; flex: none; }
+.lock-btn:hover:not(:disabled) { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, var(--border)); background: color-mix(in srgb, var(--bad) 8%, transparent); }
+.lock-btn.on { color: #fff; background: var(--bad); border-color: var(--bad); }
+.lock-btn.on:hover:not(:disabled) { color: #fff; background: color-mix(in srgb, var(--bad) 85%, #000); }
+.lock-btn svg.i { width: 16px; height: 16px; }
+.lock-btn[data-tip]::after { content: attr(data-tip); position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translate(-50%, 4px); padding: 5px 9px; border-radius: 8px; background: var(--text); color: var(--bg); font-size: 11.5px; font-weight: 600; white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity .12s, transform .12s; z-index: 5; }
+.lock-btn[data-tip]::before { content: ''; position: absolute; bottom: calc(100% + 3px); left: 50%; transform: translate(-50%, 4px); border: 5px solid transparent; border-top-color: var(--text); border-bottom: 0; opacity: 0; transition: opacity .12s, transform .12s; pointer-events: none; z-index: 5; }
+.lock-btn[data-tip]:hover::after, .lock-btn[data-tip]:hover::before, .lock-btn[data-tip]:focus-visible::after, .lock-btn[data-tip]:focus-visible::before { opacity: 1; transform: translate(-50%, 0); }

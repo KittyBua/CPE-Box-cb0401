@@ -87,6 +87,18 @@
   <a href="#console"><svg class="i"><use href="#i-terminal"/></svg>Console</a>
 </nav>
 
+<dialog id="blockDialog" class="pin-dialog" aria-labelledby="blockDialogTitle">
+  <form method="dialog">
+    <div class="card-h"><div class="ico red"><svg class="i"><use href="#i-lock"/></svg></div><h2 id="blockDialogTitle">Block device?</h2></div>
+    <p class="lead" id="blockDialogText"></p>
+    <div class="note warn"><svg class="i"><use href="#i-alert"/></svg><span id="blockDialogWarn">It goes on the blacklist: the router rejects all its traffic until you unblock it here, or send <b>unblock</b> with its MAC to your alerts (Telegram or ntfy).</span></div>
+    <div class="actions" style="margin-top:14px;justify-content:center">
+      <button class="danger" type="submit" value="ok" id="blockDialogOk"><svg class="i"><use href="#i-lock"/></svg>Block</button>
+      <button class="ghost" type="submit" value="cancel">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="pinDialog" class="pin-dialog" aria-labelledby="pinDialogTitle">
   <form id="pinDialogForm" method="dialog">
     <div class="card-h"><div class="ico"><svg class="i"><use href="#i-lock"/></svg></div><h2 id="pinDialogTitle">SIM is locked</h2></div>
@@ -442,16 +454,12 @@
     <div class="grid">
       <div class="card span-8">
         <div class="card-h"><div class="ico amber"><svg class="i"><use href="#i-devices"/></svg></div><h2>Devices</h2><span class="sub"><a href="#" class="dev-chip" data-show="online" id="devCountOn">— online</a> · <a href="#" class="dev-chip" data-show="offline" id="devCountOff">— offline</a></span></div>
-        <p class="lead">Trusted devices join silently. Anything else sends you an alert the moment it connects.</p>
+        <p class="lead">Trusted devices join silently. Anything else sends you an alert the moment it connects. The lock blocks a device from the network.</p>
         <div class="toolbar">
           <input type="text" id="devFilter" placeholder="Search name, vendor, IP or MAC" aria-label="Search devices">
           <select id="devShow" aria-label="Show"><option value="all">All devices</option><option value="online">Online</option><option value="offline">Offline</option><option value="untrusted">Not trusted</option></select>
         </div>
         <div id="devList"><div class="empty">Loading…</div></div>
-        <div class="dirty-bar">
-          <span class="msg" id="devMsg"></span>
-          <button class="primary" id="devSave" disabled>Save trusted list</button>
-        </div>
       </div>
 
       <div class="card span-4">

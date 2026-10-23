@@ -18,7 +18,7 @@ Run once, `start.sh` (macOS/Linux) or `start.ps1` (Windows) will:
 4. Install a small helper on the router (`router/install.sh`) that reapplies the cellular hooks, the SMS reader, and the notify listeners after every reboot.
 5. Fetch the prebuilt `cpe-box` binary for your OS from the latest GitHub release (or build it from source if you have Go), then launch it at `http://cpe.box`. Any laptop or phone on the same Wi‑Fi opens the same URL.
 
-Everything is idempotent — re-running `start.sh` is safe and just verifies/repairs each step.
+Everything is idempotent — re-running `start.sh` is safe and just verifies/repairs each step. On an already set-up router, `start.sh` / `start.ps1` also compare the router-side scripts with your checkout and re-upload any that changed, so fixes to them (e.g. the command listener) reach the router after a plain `git pull`.
 
 ## The dashboard
 
@@ -38,7 +38,7 @@ The Today and This month totals come from the modem itself (`mobile.flowstat.dai
 
 ![Wi-Fi page](docs/wifi.png)
 
-**Devices** — every device on the network, with a checkbox whitelist; unlisted devices trigger a push notification. A device with no DHCP hostname also gets a best-effort manufacturer name (from its MAC) and an mDNS-derived name if one answers — see [Identifying nameless devices](#identifying-nameless-devices). Live throughput per device. This is also where you switch between ntfy.sh and Telegram, update your Telegram bot token / chat ID, or turn incoming-SMS forwarding on/off, at any time — see [Incoming SMS](#incoming-sms).
+**Devices** — every device on the network, with a Trusted switch per device (saved to the router the moment you flip it); untrusted devices trigger a push notification. The lock next to the switch blocks a device from the network after a confirm - the same firewall rule as the `block` command below; click it again to unblock. There's no "delete": the list is what the router sees on the network, so an entry comes back as soon as the device gets an address again - the only list you remove devices from is the trusted one. A device with no DHCP hostname also gets a best-effort manufacturer name (from its MAC) and an mDNS-derived name if one answers — see [Identifying nameless devices](#identifying-nameless-devices). Live throughput per device. This is also where you switch between ntfy.sh and Telegram, update your Telegram bot token / chat ID, or turn incoming-SMS forwarding on/off, at any time — see [Incoming SMS](#incoming-sms).
 
 ![Devices page](docs/devices.png)
 
@@ -118,8 +118,12 @@ The router will ping you the instant an unrecognized device joins your network �
 | `<MAC or IP> trust` | Same, for a specific device |
 | `block` | Blocks the last unrecognized device seen |
 | `<MAC or IP> block` | Blocks that specific device (resolves an IP to its current MAC first, and blocks by MAC — an IP-only block would stop protecting the device the moment its DHCP lease changes) |
+| `unblock` | Lifts the block on the last unrecognized device seen, without trusting it |
+| `<MAC or IP> unblock` | Same, for a specific device |
 | `red alert` | Locks Wi‑Fi down to only the devices on your whitelist. This requires a full radio reload on this hardware, so it will briefly disconnect *every* device, including trusted ones — there's no way around that on this platform. |
-| `all clear` | Removes the lockdown, back to normal |
+| `all clear` / `red alert off` | Removes the lockdown, back to normal |
+
+The commands are plain messages and work the same on both backends: on Telegram, message the bot (replying to an alert is fine but not needed); on ntfy, publish the text to your topic from the app. Quoted replies only matter for one thing - on Telegram, replying to a forwarded SMS sends your text back to that number as a real SMS. ntfy has no replies, so that one is Telegram-only.
 
 You choose the delivery backend during setup (or later, from the panel's Devices page — the change takes effect within a minute, no re-running setup or restarting anything):
 
@@ -187,7 +191,7 @@ These were all confirmed through direct testing on real hardware this project wa
 - **TX power cannot be changed from software.** `iw set txpower fixed` returns success but has zero measurable effect; the vendor `cfg80211tool s_txpow` returns `EINVAL`; `get_maxpower`/`get_minpower` are unimplemented stubs. The panel shows the real value read-only.
 - **`qca_spectral`** is loaded and referenced by the driver stack, but exposes no usable userspace interface anywhere (checked `cfg80211tool`, `iwpriv`, and the full `debugfs` tree) — it appears to be purely an internal DFS radar-detection dependency, not something you can point at a spectrum analyzer.
 - **No Docker/Entware/Node.js.** Persistent storage is a single ~20 MB partition; there simply isn't room, and the vendor's `opkg` feed is dead (404).
-- **A `wifi reload` briefly drops every client**, trusted or not. This is triggered by changing Wi‑Fi channel/width and by the `red alert`/`all clear` commands — it's a platform limitation of this driver stack, not a bug in this toolkit.
+- **A `wifi reload` briefly drops every client**, trusted or not. This is triggered by changing Wi‑Fi channel/width and by the `red alert`/`all clear` (`red alert off`) commands — it's a platform limitation of this driver stack, not a bug in this toolkit.
 - **The stock modem daemon's API varies by firmware, so the cellular panel has an AT fallback.** By default the panel reads live cell info and applies bands through the router's own modem daemon (`ubus call mobile ...`) — it's fast, and the daemon persists band choices across reconnect/reboot on its own. But older units (e.g. cb0401 v1, ROM 3.0.116) ship a daemon with a different method set: `dump_status` is missing there (the call fails with ubus status 3, `METHOD_NOT_FOUND`) and the band-set call is rejected outright (`{"code":-1}`). When the daemon path is unavailable, the panel automatically falls back to talking to the modem directly over AT — reading serving-cell info with `AT+QENG`/`AT+QNWINFO`/`AT+QCSQ` and setting bands with `AT+QNWPREFCFG` (also mirrored into the daemon's UCI so they survive a reboot). The daemon stays the preferred path where it works; the AT fallback is what keeps v1-class firmware working instead of showing a dead card stuck on "connecting…".
 
 ## Changing the root password
