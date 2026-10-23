@@ -537,6 +537,21 @@ func handleDeviceMonitorWhitelist(w http.ResponseWriter, r *http.Request) {
 	ok(w, state)
 }
 
+func handleDeviceBlock(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Mac   string `json:"mac"`
+		Block bool   `json:"block"`
+	}
+	decodeBody(r, &body)
+	state, err := setDeviceBlocked(body.Mac, body.Block)
+	invalidate("devices")
+	if err != nil {
+		errResp(w, err)
+		return
+	}
+	ok(w, state)
+}
+
 func handleNotifyConfig(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Backend          string  `json:"backend"`
@@ -789,6 +804,7 @@ func main() {
 	mux.HandleFunc("/api/system-health", handleSystemHealth)
 	mux.HandleFunc("/api/device-monitor", handleDeviceMonitor)
 	mux.HandleFunc("/api/device-monitor/whitelist", requireMethod(http.MethodPost, handleDeviceMonitorWhitelist))
+	mux.HandleFunc("/api/device-monitor/block", requireMethod(http.MethodPost, handleDeviceBlock))
 	mux.HandleFunc("/api/notify-config", requireMethod(http.MethodPost, handleNotifyConfig))
 	mux.HandleFunc("/api/data-usage", handleDataUsage)
 	mux.HandleFunc("/api/cellular-info", handleCellularInfo)

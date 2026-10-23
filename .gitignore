@@ -20,7 +20,6 @@ router/sms-reader-arm
 
 # Runtime state — fetch.sh writes the currently-downloaded release tag here
 panel/.release
-router/sms-reader/dist/
 # motion map floor plan (your own, local)
 /data/
 

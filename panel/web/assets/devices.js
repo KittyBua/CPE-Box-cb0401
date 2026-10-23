@@ -4,7 +4,7 @@
 
 Views.devices = { sources: ['devices', 'hosts'] };
 
-const Dev = { list: [], trusted: new Set(), edit: null, open: null };
+const Dev = { list: [], trusted: new Set(), blocked: new Set(), busy: new Set(), open: null };
 
 // The stock device list: names you gave devices, internet access, speeds
 // and address reservations, keyed by MAC.
@@ -38,7 +38,7 @@ function deviceIcon(d) {
 }
 
 function renderDevices() {
-  const trusted = Dev.edit || Dev.trusted;
+  const trusted = Dev.trusted;
   const q = $('#devFilter').value.trim().toLowerCase();
   const show = $('#devShow').value;
   const rows = Dev.list.filter(d => {
@@ -70,13 +70,15 @@ function renderDevices() {
     const st = host && host.statistics;
     const speed = st && d.online ? [fmtRate(Number(st.downspeed)) && '↓ ' + fmtRate(Number(st.downspeed)), fmtRate(Number(st.upspeed)) && '↑ ' + fmtRate(Number(st.upspeed))].filter(Boolean).join('  ') : '';
     const t = trusted.has(d.mac);
+    const lockd = Dev.blocked.has(d.mac);
     const open = Dev.open === d.mac;
     return `<div class="dev ${open ? 'open' : ''}">
-      <div class="avatar ${blocked ? 'alert' : d.online ? (t ? 'online' : 'alert') : ''}">${icon(blocked ? 'lock' : deviceIcon(d))}</div>
+      <div class="avatar ${blocked || lockd ? 'alert' : d.online ? (t ? 'online' : 'alert') : ''}">${icon(blocked || lockd ? 'lock' : deviceIcon(d))}</div>
       <div class="main" data-open="${esc(d.mac)}" tabindex="0" role="button" aria-expanded="${open}"><div class="name">${esc(name)}${via}${blocked ? ' <span class="pill bad" style="padding:1px 8px">No internet</span>' : ''}</div>
         <div class="meta">${meta}</div>${speed ? `<div class="speed">${esc(speed)}</div>` : ''}</div>
-      <div class="end"><span class="${t ? '' : 'q-fair'}">${t ? 'Trusted' : d.online ? 'Not trusted' : ''}</span>
-        <label class="switch"><input type="checkbox" data-mac="${esc(d.mac)}" ${t ? 'checked' : ''} aria-label="Trust ${esc(name)}"><span></span></label>
+      <div class="end"><span class="${lockd ? 'q-poor' : t ? '' : 'q-fair'}">${lockd ? 'Blocked' : t ? 'Trusted' : d.online ? 'Not trusted' : ''}</span>
+        <label class="switch"><input type="checkbox" data-mac="${esc(d.mac)}" ${t ? 'checked' : ''} ${Dev.busy.has(d.mac) ? 'disabled' : ''} aria-label="Trust ${esc(name)}"><span></span></label>
+        <button type="button" class="lock-btn ${lockd ? 'on' : ''}" data-lock="${esc(d.mac)}" data-tip="${lockd ? 'Unblock' : 'Block'}" aria-label="${lockd ? 'Unblock' : 'Block'} ${esc(name)}" ${Dev.busy.has(d.mac) ? 'disabled' : ''}>${icon('lock')}</button>
       </div></div>
       ${open ? devicePanel(d, host, bind, blocked) : ''}`;
   }).join('');
@@ -139,13 +141,60 @@ $('#devList').addEventListener('change', async e => {
   }
   const mac = e.target.dataset.mac;
   if (!mac) return;
-  if (!Dev.edit) Dev.edit = new Set(Dev.trusted);
-  if (e.target.checked) Dev.edit.add(mac); else Dev.edit.delete(mac);
-  const changed = Dev.edit.size !== Dev.trusted.size || [...Dev.edit].some(m => !Dev.trusted.has(m));
-  $('#devSave').disabled = !changed;
-  setMsg('devMsg', changed ? 'Unsaved changes' : '');
-  if (!changed) Dev.edit = null;
+  // Trusted list saves right away - no separate Save step.
+  const want = e.target.checked;
+  const next = new Set(Dev.trusted);
+  if (want) next.add(mac); else next.delete(mac);
+  const prev = Dev.trusted;
+  Dev.trusted = next;
+  Dev.busy.add(mac);
   renderDevices();
+  try {
+    const d = await api('/api/device-monitor/whitelist', { macs: [...next] });
+    const name = deviceName(Dev.list.find(x => x.mac === mac) || { mac });
+    toast(want ? `${name} trusted` : `${name} removed from trusted`);
+    if (d && d.devices) publish('devices', d); else refresh('devices');
+  } catch (err) {
+    Dev.trusted = prev;
+    toast(err.message, 'err');
+  } finally {
+    Dev.busy.delete(mac);
+    renderDevices();
+  }
+});
+
+// The lock: blocks the device on the router (same firewall rule as the
+// Telegram "block" command), after a confirm in the panel's own dialog.
+function confirmBlock(name) {
+  const dlg = $('#blockDialog');
+  setText('blockDialogTitle', `Block ${name}?`);
+  setText('blockDialogText', `${name} will be blacklisted and cut off from the network.`);
+  dlg.returnValue = '';
+  dlg.showModal();
+  return new Promise(res => dlg.addEventListener('close', () => res(dlg.returnValue === 'ok'), { once: true }));
+}
+
+$('#devList').addEventListener('click', async e => {
+  const btn = e.target.closest('[data-lock]');
+  if (!btn) return;
+  e.stopPropagation();
+  const mac = btn.dataset.lock;
+  const d = Dev.list.find(x => x.mac === mac) || { mac };
+  const name = deviceName(d);
+  const block = !Dev.blocked.has(mac);
+  if (block && !(await confirmBlock(name))) return;
+  Dev.busy.add(mac);
+  renderDevices();
+  try {
+    const st = await api('/api/device-monitor/block', { mac, block });
+    toast(block ? `${name} blocked` : `${name} unblocked`);
+    if (st && st.devices) publish('devices', st); else refresh('devices');
+  } catch (err) {
+    toast(err.message, 'err');
+  } finally {
+    Dev.busy.delete(mac);
+    renderDevices();
+  }
 });
 $('#devFilter').addEventListener('input', renderDevices);
 $('#devShow').addEventListener('change', renderDevices);
@@ -157,25 +206,17 @@ $$('.dev-chip').forEach(a => a.addEventListener('click', e => {
   renderDevices();
 }));
 
-$('#devSave').addEventListener('click', e => withBusy(e.currentTarget, async () => {
-  const macs = [...(Dev.edit || Dev.trusted)];
-  const d = await api('/api/device-monitor/whitelist', { macs });
-  Dev.edit = null;
-  setMsg('devMsg', '');
-  toast('Trusted list saved');
-  if (d && d.devices) publish('devices', d); else refresh('devices');
-}).catch(() => {}).finally(() => { $('#devSave').disabled = !Dev.edit; }));
-
 on('devices', (data, err) => {
   if (!data) {
     if (err) $('#devList').innerHTML = `<div class="empty">${esc(err.message)}</div>`;
     return;
   }
   Dev.trusted = new Set(data.whitelist || []);
+  Dev.blocked = new Set(data.blocked || []);
   // online devices, plus trusted ones that are offline right now
   const byMac = {};
   (data.devices || []).forEach(d => { byMac[d.mac] = d; });
-  (data.whitelist || []).forEach(mac => { if (!byMac[mac]) byMac[mac] = { mac, ip: null, hostname: null }; });
+  [...(data.whitelist || []), ...(data.blocked || [])].forEach(mac => { if (!byMac[mac]) byMac[mac] = { mac, ip: null, hostname: null }; });
   Dev.list = Object.values(byMac).sort((a, b) =>
     (!!b.ip - !!a.ip) || deviceName(a).localeCompare(deviceName(b)));
   if (!typingName()) renderDevices();

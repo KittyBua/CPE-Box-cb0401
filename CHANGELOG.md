@@ -14,6 +14,21 @@ Because the notes live in this file, Markdown headings work as-is — no
 `--cleanup=verbatim` needed on the tag. Everything up to the next `## vX.Y.Z`
 heading belongs to a version; use `##` for the subsections within it.
 
+## v1.0.13 — Windows: no more sshpass dependency, block devices from the list
+
+## New
+
+- **Block a device right from the Devices list.** A lock next to the Trusted switch (hover: "Block") blacklists the device on the router - the same firewall rule the `block` command (Telegram or ntfy) writes - after a confirm dialog. Click it again to unblock. Blocked devices show a red lock and stay listed even while offline.
+- **`unblock` command** (Telegram and ntfy): `unblock` / `<MAC or IP> unblock` lifts a block without trusting the device. Before this, "unblock" matched the `block` rule and blocked the device instead.
+- **`red alert off`** works as a second way to say `all clear`.
+- **Router scripts stay up to date.** `start.sh` / `start.ps1` now compare the router-side scripts (command listener, alert hooks, boot patch) with the checkout and re-upload only the ones that changed - setup used to upload them once, so fixes never reached a router that was already set up.
+- **Trusted list saves instantly.** Flipping the Trusted switch writes to the router right away; the separate "Save trusted list" button is gone.
+
+## Fixes
+
+- **On ntfy, a forwarded SMS could run as a command.** The router's own messages come back on the shared topic and are skipped by title, but "SMS from …", "SMS sent" and "SMS send failed" weren't on that list - an SMS saying e.g. "your card was blocked" would have triggered `block`. They're skipped now.
+- **Windows setup failed with `sshpass: executable file not found`** when the panel had to fall back to a password login (e.g. the stored SSH key stopped being accepted). `sshpass` is a Unix-only tool and isn't on Windows. The panel now does password SSH natively via the Go SSH client, with the same legacy-algorithm set the shell path uses - the dependency on `sshpass` is gone on every OS. Reported in the issue tracker.
+
 ## v1.0.12 — SMS on the SIM, iframe-embed opt-in
 
 ## New

@@ -5,6 +5,8 @@
 #   "trust"                — adds the last device seen to the whitelist (and
 #                             lifts its block, if it had one).
 #   "<MAC> trust" / "<IP> trust" — same, for a specific device.
+#   "unblock" / "<MAC> unblock" / "<IP> unblock" — lifts a block without
+#                             trusting the device (bare: last device seen).
 #   "block"                — blocks the last device seen by device_monitor.sh
 #   "<MAC> block" / "<IP> block" (either order) — blocks a specific device.
 #                             If an IP is given, its current MAC is looked up
@@ -17,7 +19,7 @@
 #                             (including trusted ones) for a few seconds —
 #                             it requires a full radio reload on this
 #                             platform, there's no way around that.
-#   "all clear"             — removes the allow-list, back to normal.
+#   "all clear" / "red alert off" — removes the allow-list, back to normal.
 #   (reply, on Telegram)    — replying directly to a forwarded "SMS from
 #                             X" message sends your reply text back to X
 #                             as a real SMS, via the modem's own ubus
@@ -80,6 +82,19 @@ block_ip_only() {
     uci commit firewall
     /etc/init.d/firewall reload >/dev/null 2>&1
     notify "Blocked (by IP)" "no_entry_sign" "$ip - no MAC found, this will not survive an IP change"
+}
+
+unblock_mac() {
+    mac="$1"
+    rule="block_$(echo "$mac" | tr ':' '_')"
+    if uci -q get firewall."$rule" >/dev/null 2>&1; then
+        uci -q delete firewall."$rule"
+        uci commit firewall
+        /etc/init.d/firewall reload >/dev/null 2>&1
+        notify "Unblocked" "white_check_mark" "$mac"
+    else
+        notify "Unblock" "information_source" "$mac wasn't blocked"
+    fi
 }
 
 trust_mac() {
@@ -199,9 +214,17 @@ handle_message() {
         fi
     fi
 
+    # "red alert off" is the same as "all clear" - checked first, otherwise
+    # it would match "red alert" and switch the lockdown on.
+    if echo "$msg" | grep -qi 'red[[:space:]]*alert[[:space:]]*off'; then
+        apply_macfilter disable
+        notify "All clear" "white_check_mark" "Wi-Fi is back to normal."
+        return
+    fi
+
     if echo "$msg" | grep -qi 'red[[:space:]]*alert'; then
         apply_macfilter allow
-        notify "Red alert" "rotating_light" "Only whitelisted devices allowed. Reply 'all clear' to undo."
+        notify "Red alert" "rotating_light" "Only whitelisted devices allowed. Reply 'all clear' or 'red alert off' to undo."
         return
     fi
 
@@ -227,6 +250,25 @@ handle_message() {
             trust_mac "$mac"
         else
             notify "Trust failed" "warning" "No MAC found for that request - use the MAC address directly."
+        fi
+        return
+    fi
+
+    if echo "$msg" | grep -qi 'unblock'; then
+        mac=$(echo "$msg" | grep -oE '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' | head -1 | tr 'a-z' 'A-Z')
+        ip=$(echo "$msg" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1)
+        if [ -z "$mac" ] && [ -z "$ip" ] && [ -s "$LAST_SEEN" ]; then
+            mac=$(awk '{print $1}' "$LAST_SEEN")
+        fi
+        if [ -z "$mac" ] && [ -n "$ip" ]; then
+            mac=$(resolve_mac_from_ip "$ip")
+        fi
+        if [ -n "$mac" ]; then
+            unblock_mac "$mac"
+        elif [ -n "$ip" ]; then
+            rule="block_$(echo "$ip" | tr '.' '_')"
+            uci -q delete firewall."$rule" && uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1
+            notify "Unblocked" "white_check_mark" "$ip"
         fi
         return
     fi
@@ -302,7 +344,9 @@ handle_ntfy_line() {
     # ignored).
     title=$(echo "$line" | sed -n 's/.*"title":"\([^"]*\)".*/\1/p')
     case "$title" in
-        "New device"|"Blocked"|"Blocked (by IP)"|"Trusted"|"Trust failed"|"Red alert"|"All clear"|"Welcome")
+        "New device"|"Blocked"|"Blocked (by IP)"|"Unblocked"|"Unblock"|"Trusted"|"Trust failed"|"Red alert"|"All clear"|"Welcome"|"SMS sent"|"SMS send failed"|"SMS from "*)
+            # (forwarded SMS too: their text is someone else's words and
+            # must never run as a command - "your card was blocked")
             return ;;
     esac
 

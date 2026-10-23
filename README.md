@@ -18,7 +18,7 @@ Run once, `start.sh` (macOS/Linux) or `start.ps1` (Windows) will:
 4. Install a small helper on the router (`router/install.sh`) that reapplies the cellular hooks, the SMS reader, and the notify listeners after every reboot.
 5. Fetch the prebuilt `cpe-box` binary for your OS from the latest GitHub release (or build it from source if you have Go), then launch it at `http://cpe.box`. Any laptop or phone on the same Wi‑Fi opens the same URL.
 
-Everything is idempotent — re-running `start.sh` is safe and just verifies/repairs each step.
+Everything is idempotent — re-running `start.sh` is safe and just verifies/repairs each step. On an already set-up router, `start.sh` / `start.ps1` also compare the router-side scripts with your checkout and re-upload any that changed, so fixes to them (e.g. the command listener) reach the router after a plain `git pull`.
 
 ## The dashboard
 
@@ -38,7 +38,7 @@ The Today and This month totals come from the modem itself (`mobile.flowstat.dai
 
 ![Wi-Fi page](docs/wifi.png)
 
-**Devices** — every device on the network, with a checkbox whitelist; unlisted devices trigger a push notification. A device with no DHCP hostname also gets a best-effort manufacturer name (from its MAC) and an mDNS-derived name if one answers — see [Identifying nameless devices](#identifying-nameless-devices). Live throughput per device. This is also where you switch between ntfy.sh and Telegram, update your Telegram bot token / chat ID, or turn incoming-SMS forwarding on/off, at any time — see [Incoming SMS](#incoming-sms).
+**Devices** — every device on the network, with a Trusted switch per device (saved to the router the moment you flip it); untrusted devices trigger a push notification. The lock next to the switch blocks a device from the network after a confirm - the same firewall rule as the `block` command below; click it again to unblock. There's no "delete": the list is what the router sees on the network, so an entry comes back as soon as the device gets an address again - the only list you remove devices from is the trusted one. A device with no DHCP hostname also gets a best-effort manufacturer name (from its MAC) and an mDNS-derived name if one answers — see [Identifying nameless devices](#identifying-nameless-devices). Live throughput per device. This is also where you switch between ntfy.sh and Telegram, update your Telegram bot token / chat ID, or turn incoming-SMS forwarding on/off, at any time — see [Incoming SMS](#incoming-sms).
 
 ![Devices page](docs/devices.png)
 
@@ -118,8 +118,12 @@ The router will ping you the instant an unrecognized device joins your network �
 | `<MAC or IP> trust` | Same, for a specific device |
 | `block` | Blocks the last unrecognized device seen |
 | `<MAC or IP> block` | Blocks that specific device (resolves an IP to its current MAC first, and blocks by MAC — an IP-only block would stop protecting the device the moment its DHCP lease changes) |
+| `unblock` | Lifts the block on the last unrecognized device seen, without trusting it |
+| `<MAC or IP> unblock` | Same, for a specific device |
 | `red alert` | Locks Wi‑Fi down to only the devices on your whitelist. This requires a full radio reload on this hardware, so it will briefly disconnect *every* device, including trusted ones — there's no way around that on this platform. |
-| `all clear` | Removes the lockdown, back to normal |
+| `all clear` / `red alert off` | Removes the lockdown, back to normal |
+
+The commands are plain messages and work the same on both backends: on Telegram, message the bot (replying to an alert is fine but not needed); on ntfy, publish the text to your topic from the app. Quoted replies only matter for one thing - on Telegram, replying to a forwarded SMS sends your text back to that number as a real SMS. ntfy has no replies, so that one is Telegram-only.
 
 You choose the delivery backend during setup (or later, from the panel's Devices page — the change takes effect within a minute, no re-running setup or restarting anything):
 
@@ -162,15 +166,16 @@ By default (`sh cleanup.sh`, no flags), the following is disabled — all verifi
 - **`breakpad`** — Google Breakpad crash reporter, uploads crash dumps to Xiaomi.
 - A couple of dead cron entries left over from other hardware variants (referencing scripts and directories that don't even exist on this firmware).
 
-Two extra, opt-in flags exist for things that are genuinely useful for *some* people and not others:
+The services below are switched off by default as well, because they are useful for *some* people and not others. Keep a group with a `--keep-*` flag if you use it:
 
-- `--disable-mesh` — disables `cab_meshd` / `miwifi-discovery` / `miwifi-roam`, which run at boot unconditionally even if you have no Xiaomi Mesh satellite node paired. Skip this if you actually use Mesh.
-- `--disable-messagingagent` — disables the router's MQTT connection to Xiaomi's cloud. This may be what the Mi Home app or your carrier's remote support tooling relies on — only disable it if you don't need either.
-- `--all` — both of the above.
+- `--keep-cloud` — keeps the router's MQTT connection to Xiaomi's cloud (`messagingagent`, `xq_info_sync_mqtt`, `mosquitto`). Needed only for remote access through the Mi WiFi / Mi Home app.
+- `--keep-mesh` — keeps `cab_meshd` / `meshd` / `miwifi-discovery` / `miwifi-roam`, which otherwise run at boot even with no Xiaomi Mesh satellite node paired. Needed only with Mesh satellites.
+- `--keep-tr069` — keeps the carrier's remote management (`easycwmpd`, `tr069_stun`).
+- `--keep-miot` — keeps the Mi Home smart-device integration (`miot`).
 
-Pass these to `setup.sh`/`setup.ps1` via the `CLEANUP_FLAGS` environment variable (e.g. `CLEANUP_FLAGS=--all ./setup.sh`) so you don't need a manual follow-up SSH session.
+Pass these to `setup.sh`/`setup.ps1` via the `CLEANUP_FLAGS` environment variable (e.g. `CLEANUP_FLAGS=--keep-mesh ./setup.sh`) so you don't need a manual follow-up SSH session. The full list lives in the header of [`router/cleanup.sh`](router/cleanup.sh).
 
-**On persistence:** service disables (`--disable-mesh`/`--disable-messagingagent`/breakpad) only take effect through `/etc/init.d/X disable`, which lives on this router's ramfs-mounted `/etc` — confirmed live that they silently revert to "enabled" after a reboot, the same root cause as the [root password not sticking without the direct-write fix](#changing-the-root-password). `cleanup.sh` works around this the same way `bootstrap/open_ssh.sh` keeps SSH open: it installs a small cron job that reapplies the disables within a minute of every boot. The telemetry/dead-cron removals above don't need this — they edit `/etc/crontabs/root`, which is a symlink into persistent storage and survives reboots on its own.
+**On persistence:** service disables (cloud / Mesh / TR-069 / Mi Home / breakpad) only take effect through `/etc/init.d/X disable`, which lives on this router's ramfs-mounted `/etc` — confirmed live that they silently revert to "enabled" after a reboot, the same root cause as the [root password not sticking without the direct-write fix](#changing-the-root-password). `cleanup.sh` works around this the same way `bootstrap/open_ssh.sh` keeps SSH open: it installs a small cron job that reapplies the disables within a minute of every boot. The telemetry/dead-cron removals above don't need this — they edit `/etc/crontabs/root`, which is a symlink into persistent storage and survives reboots on its own.
 
 ## 5 GHz 160 MHz and DFS
 
@@ -187,7 +192,7 @@ These were all confirmed through direct testing on real hardware this project wa
 - **TX power cannot be changed from software.** `iw set txpower fixed` returns success but has zero measurable effect; the vendor `cfg80211tool s_txpow` returns `EINVAL`; `get_maxpower`/`get_minpower` are unimplemented stubs. The panel shows the real value read-only.
 - **`qca_spectral`** is loaded and referenced by the driver stack, but exposes no usable userspace interface anywhere (checked `cfg80211tool`, `iwpriv`, and the full `debugfs` tree) — it appears to be purely an internal DFS radar-detection dependency, not something you can point at a spectrum analyzer.
 - **No Docker/Entware/Node.js.** Persistent storage is a single ~20 MB partition; there simply isn't room, and the vendor's `opkg` feed is dead (404).
-- **A `wifi reload` briefly drops every client**, trusted or not. This is triggered by changing Wi‑Fi channel/width and by the `red alert`/`all clear` commands — it's a platform limitation of this driver stack, not a bug in this toolkit.
+- **A `wifi reload` briefly drops every client**, trusted or not. This is triggered by changing Wi‑Fi channel/width and by the `red alert`/`all clear` (`red alert off`) commands — it's a platform limitation of this driver stack, not a bug in this toolkit.
 - **The stock modem daemon's API varies by firmware, so the cellular panel has an AT fallback.** By default the panel reads live cell info and applies bands through the router's own modem daemon (`ubus call mobile ...`) — it's fast, and the daemon persists band choices across reconnect/reboot on its own. But older units (e.g. cb0401 v1, ROM 3.0.116) ship a daemon with a different method set: `dump_status` is missing there (the call fails with ubus status 3, `METHOD_NOT_FOUND`) and the band-set call is rejected outright (`{"code":-1}`). When the daemon path is unavailable, the panel automatically falls back to talking to the modem directly over AT — reading serving-cell info with `AT+QENG`/`AT+QNWINFO`/`AT+QCSQ` and setting bands with `AT+QNWPREFCFG` (also mirrored into the daemon's UCI so they survive a reboot). The daemon stays the preferred path where it works; the AT fallback is what keeps v1-class firmware working instead of showing a dead card stuck on "connecting…".
 
 ## Changing the root password
@@ -196,7 +201,7 @@ These were all confirmed through direct testing on real hardware this project wa
 
 The GUI always logs in with its own SSH key first, and only falls back to a password (to silently reinstall the key) if the key stops working — for instance after a factory-reset-like event that wipes `/etc`. Whenever you change the password from the panel, it updates the toolkit's own `.env` in the same step, so that fallback keeps using the current password rather than the stale factory one. Because the panel itself signs you in with the router's root password, every browser you're logged in from on other devices is signed out — the current password is what proves you're allowed in.
 
-This password fallback needs the `sshpass` tool, which `setup.sh` installs for you on macOS/Linux. It isn't available on Windows by default, so on Windows this one specific fallback is a no-op — the panel still works normally, and if the router ever does lose the key, just re-run `setup.ps1` to reinstall it.
+Since v1.0.13 the panel does this password login itself, with its built-in SSH client, so the fallback works the same on macOS, Linux and Windows and needs no `sshpass`. (`setup.sh` still installs `sshpass` on macOS/Linux only for its own first-time key install.) If the router ever loses the key and the stored password is stale too, re-run `setup.sh` / `setup.ps1` to reinstall it.
 
 ## Getting started
 
