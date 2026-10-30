@@ -166,15 +166,16 @@ By default (`sh cleanup.sh`, no flags), the following is disabled — all verifi
 - **`breakpad`** — Google Breakpad crash reporter, uploads crash dumps to Xiaomi.
 - A couple of dead cron entries left over from other hardware variants (referencing scripts and directories that don't even exist on this firmware).
 
-Two extra, opt-in flags exist for things that are genuinely useful for *some* people and not others:
+The services below are switched off by default as well, because they are useful for *some* people and not others. Keep a group with a `--keep-*` flag if you use it:
 
-- `--disable-mesh` — disables `cab_meshd` / `miwifi-discovery` / `miwifi-roam`, which run at boot unconditionally even if you have no Xiaomi Mesh satellite node paired. Skip this if you actually use Mesh.
-- `--disable-messagingagent` — disables the router's MQTT connection to Xiaomi's cloud. This may be what the Mi Home app or your carrier's remote support tooling relies on — only disable it if you don't need either.
-- `--all` — both of the above.
+- `--keep-cloud` — keeps the router's MQTT connection to Xiaomi's cloud (`messagingagent`, `xq_info_sync_mqtt`, `mosquitto`). Needed only for remote access through the Mi WiFi / Mi Home app.
+- `--keep-mesh` — keeps `cab_meshd` / `meshd` / `miwifi-discovery` / `miwifi-roam`, which otherwise run at boot even with no Xiaomi Mesh satellite node paired. Needed only with Mesh satellites.
+- `--keep-tr069` — keeps the carrier's remote management (`easycwmpd`, `tr069_stun`).
+- `--keep-miot` — keeps the Mi Home smart-device integration (`miot`).
 
-Pass these to `setup.sh`/`setup.ps1` via the `CLEANUP_FLAGS` environment variable (e.g. `CLEANUP_FLAGS=--all ./setup.sh`) so you don't need a manual follow-up SSH session.
+Pass these to `setup.sh`/`setup.ps1` via the `CLEANUP_FLAGS` environment variable (e.g. `CLEANUP_FLAGS=--keep-mesh ./setup.sh`) so you don't need a manual follow-up SSH session. The full list lives in the header of [`router/cleanup.sh`](router/cleanup.sh).
 
-**On persistence:** service disables (`--disable-mesh`/`--disable-messagingagent`/breakpad) only take effect through `/etc/init.d/X disable`, which lives on this router's ramfs-mounted `/etc` — confirmed live that they silently revert to "enabled" after a reboot, the same root cause as the [root password not sticking without the direct-write fix](#changing-the-root-password). `cleanup.sh` works around this the same way `bootstrap/open_ssh.sh` keeps SSH open: it installs a small cron job that reapplies the disables within a minute of every boot. The telemetry/dead-cron removals above don't need this — they edit `/etc/crontabs/root`, which is a symlink into persistent storage and survives reboots on its own.
+**On persistence:** service disables (cloud / Mesh / TR-069 / Mi Home / breakpad) only take effect through `/etc/init.d/X disable`, which lives on this router's ramfs-mounted `/etc` — confirmed live that they silently revert to "enabled" after a reboot, the same root cause as the [root password not sticking without the direct-write fix](#changing-the-root-password). `cleanup.sh` works around this the same way `bootstrap/open_ssh.sh` keeps SSH open: it installs a small cron job that reapplies the disables within a minute of every boot. The telemetry/dead-cron removals above don't need this — they edit `/etc/crontabs/root`, which is a symlink into persistent storage and survives reboots on its own.
 
 ## 5 GHz 160 MHz and DFS
 
@@ -200,7 +201,7 @@ These were all confirmed through direct testing on real hardware this project wa
 
 The GUI always logs in with its own SSH key first, and only falls back to a password (to silently reinstall the key) if the key stops working — for instance after a factory-reset-like event that wipes `/etc`. Whenever you change the password from the panel, it updates the toolkit's own `.env` in the same step, so that fallback keeps using the current password rather than the stale factory one. Because the panel itself signs you in with the router's root password, every browser you're logged in from on other devices is signed out — the current password is what proves you're allowed in.
 
-This password fallback needs the `sshpass` tool, which `setup.sh` installs for you on macOS/Linux. It isn't available on Windows by default, so on Windows this one specific fallback is a no-op — the panel still works normally, and if the router ever does lose the key, just re-run `setup.ps1` to reinstall it.
+Since v1.0.13 the panel does this password login itself, with its built-in SSH client, so the fallback works the same on macOS, Linux and Windows and needs no `sshpass`. (`setup.sh` still installs `sshpass` on macOS/Linux only for its own first-time key install.) If the router ever loses the key and the stored password is stale too, re-run `setup.sh` / `setup.ps1` to reinstall it.
 
 ## Getting started
 

@@ -27,8 +27,8 @@ const sampleAT = "AT+COPS?\r\n+COPS: 0,0,\"Telekom.de\",13\r\n\r\nOK\r\n" +
 	"+QENG: \"NR5G-NSA\",262,01,774,-82,30,-11,431070,1,3,0\r\n\r\nOK\r\n" +
 	"AT+CPIN?\r\n+CPIN: READY\r\n\r\nOK\r\n" +
 	"AT+CEREG?\r\n+CEREG: 0,1\r\n\r\nOK\r\n" +
-	"AT+QCCID\r\n+QCCID: 89490200002149039092\r\n\r\nOK\r\n" +
-	"AT+CNUM\r\n+CNUM: ,\"+4917684249486\",145\r\n\r\nOK\r\n" +
+	"AT+QCCID\r\n+QCCID: 89490200000000000001\r\n\r\nOK\r\n" +
+	"AT+CNUM\r\n+CNUM: ,\"+491761234567\",145\r\n\r\nOK\r\n" +
 	"AT+CGDCONT?\r\n+CGDCONT: 1,\"IPV4V6\",\"internet.v6.telekom\",\"0.0.0.0\",0,0\r\n\r\nOK\r\n"
 
 func TestParseATCellular(t *testing.T) {
@@ -51,8 +51,8 @@ func TestParseATCellular(t *testing.T) {
 		"rsrq_5g":      "-11",
 		"pci_5g":       "774",
 		"sim_status":   "Ready",
-		"sim_number":   "+4917684249486",
-		"sim_iccid":    "89490200002149039092",
+		"sim_number":   "+491761234567",
+		"sim_iccid":    "89490200000000000001",
 	}
 	for k, want := range wantStr {
 		if got, _ := info[k].(string); got != want {
@@ -84,8 +84,8 @@ func atSAFooter() string {
 	return "AT+CPIN?\r\n+CPIN: READY\r\n\r\nOK\r\n" +
 		"AT+CEREG?\r\n+CEREG: 0,0\r\n\r\nOK\r\n" +
 		"AT+C5GREG?\r\n+C5GREG: 0,1\r\n\r\nOK\r\n" +
-		"AT+QCCID\r\n+QCCID: 89490200002149039092\r\n\r\nOK\r\n" +
-		"AT+CNUM\r\n+CNUM: ,\"+4917684249486\",145\r\n\r\nOK\r\n" +
+		"AT+QCCID\r\n+QCCID: 89490200000000000001\r\n\r\nOK\r\n" +
+		"AT+CNUM\r\n+CNUM: ,\"+491761234567\",145\r\n\r\nOK\r\n" +
 		"AT+CGDCONT?\r\n+CGDCONT: 1,\"IPV4V6\",\"internet\",\"0.0.0.0\",0,0\r\n\r\nOK\r\n"
 }
 
@@ -95,7 +95,7 @@ func checkSA(t *testing.T, info map[string]any) {
 		"operator": "Telekom.de", "network_type": "5G SA",
 		"band_5g": "n78", "band_primary": "",
 		"rsrp_5g": "-88", "rsrq_5g": "-11", "snr_5g": "25", "pci_5g": "101", "nr_arfcn": "633984",
-		"sim_status": "Ready", "sim_iccid": "89490200002149039092",
+		"sim_status": "Ready", "sim_iccid": "89490200000000000001",
 	}
 	for k, want := range wantStr {
 		if got, _ := info[k].(string); got != want {
@@ -239,7 +239,7 @@ func TestNormalizeNrSinr(t *testing.T) {
 // Real dump_status from the stock daemon on cb0401 v2 (ROM 3.0.57). Signal
 // fields are quoted strings and ci_5g is the "-" placeholder that used to
 // break a json.Number parse — parseDumpStatus (via loose) must handle both.
-const sampleDump = `{"sim":{"status":1,"pin_remains":3,"puk_remains":10,"lock":1,"iccid":"89490200002149039092","imsi":"262011628009544","number":"+4917684249486","country":"DE"},"status":{"registration":1,"isp":"Telekom.de","apn":"internet.v6.telekom","rat":"5G NSA","band":"B3+B8+n1","roam":0,"cell_band":"B3(FDD 1800+)","ci":"26383616","pci":"321","level":4,"rsrq":"-7.0","rsrp":"-75.4","snr":"28.0","rssi":"-48.4","cell_band_5g":"n1(FDD 2100)","ci_5g":"-","pci_5g":"774","rsrq_5g":"-11.0","rsrp_5g":"-83.0","snr_5g":"28.0"},"code":0}`
+const sampleDump = `{"sim":{"status":1,"pin_remains":3,"puk_remains":10,"lock":1,"iccid":"89490200000000000001","imsi":"262010000000001","number":"+491761234567","country":"DE"},"status":{"registration":1,"isp":"Telekom.de","apn":"internet.v6.telekom","rat":"5G NSA","band":"B3+B8+n1","roam":0,"cell_band":"B3(FDD 1800+)","ci":"26383616","pci":"321","level":4,"rsrq":"-7.0","rsrp":"-75.4","snr":"28.0","rssi":"-48.4","cell_band_5g":"n1(FDD 2100)","ci_5g":"-","pci_5g":"774","rsrq_5g":"-11.0","rsrp_5g":"-83.0","snr_5g":"28.0"},"code":0}`
 
 func TestParseDumpStatus(t *testing.T) {
 	info, err := parseDumpStatus(sampleDump)

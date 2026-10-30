@@ -131,10 +131,10 @@ func TestLteBandFromEarfcn(t *testing.T) {
 }
 
 func TestEncodeMSISDN(t *testing.T) {
-	// The record as read back from a real Telekom SIM (AT+CRSM=178,28480,1,4,0).
-	const real = "456967656E65205275666E756D6D65720891947186249484F6FFFFFFFFFF"
+	// A record in the layout a Telekom SIM returns (AT+CRSM=178,28480,1,4,0), with a made-up number.
+	const real = "456967656E65205275666E756D6D65720791947116325476FFFFFFFFFFFF"
 	alpha, _ := hex.DecodeString(real[:32])
-	got, err := encodeMSISDN("+4917684249486", 30, alpha)
+	got, err := encodeMSISDN("+491761234567", 30, alpha)
 	if err != nil || got != real {
 		t.Errorf("encode = %s, %v\nwant     %s", got, err, real)
 	}
